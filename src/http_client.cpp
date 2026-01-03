@@ -38,7 +38,7 @@ namespace polymarket
     }
 
     HttpClient::HttpClient(HttpClient &&other) noexcept
-        : curl_(other.curl_), headers_(other.headers_), base_url_(std::move(other.base_url_)), timeout_ms_(other.timeout_ms_)
+        : curl_(other.curl_), headers_(other.headers_), base_url_(std::move(other.base_url_)), proxy_url_(std::move(other.proxy_url_)), timeout_ms_(other.timeout_ms_)
     {
         other.curl_ = nullptr;
         other.headers_ = nullptr;
@@ -52,6 +52,7 @@ namespace polymarket
             curl_ = other.curl_;
             headers_ = other.headers_;
             base_url_ = std::move(other.base_url_);
+            proxy_url_ = std::move(other.proxy_url_);
             timeout_ms_ = other.timeout_ms_;
             other.curl_ = nullptr;
             other.headers_ = nullptr;
@@ -115,6 +116,30 @@ namespace polymarket
     void HttpClient::add_header(const std::string &header)
     {
         headers_ = curl_slist_append(headers_, header.c_str());
+    }
+
+    void HttpClient::set_proxy(const std::string &proxy_url)
+    {
+        proxy_url_ = proxy_url;
+        if (!proxy_url_.empty() && curl_)
+        {
+            curl_easy_setopt(curl_, CURLOPT_PROXY, proxy_url_.c_str());
+            curl_easy_setopt(curl_, CURLOPT_HTTPPROXYTUNNEL, 1L); // Use CONNECT for HTTPS
+            curl_easy_setopt(curl_, CURLOPT_PROXYTYPE, CURLPROXY_HTTP);
+            // Skip SSL verification when using proxy (residential proxies may intercept)
+            curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYHOST, 0L);
+            curl_easy_setopt(curl_, CURLOPT_PROXY_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl_, CURLOPT_PROXY_SSL_VERIFYHOST, 0L);
+        }
+    }
+
+    void HttpClient::set_user_agent(const std::string &user_agent)
+    {
+        if (curl_)
+        {
+            curl_easy_setopt(curl_, CURLOPT_USERAGENT, user_agent.c_str());
+        }
     }
 
     size_t HttpClient::write_callback(char *ptr, size_t size, size_t nmemb, void *userdata)

@@ -314,6 +314,12 @@ namespace polymarket
         // Set timeout
         void set_timeout_ms(long timeout_ms) { http_.set_timeout_ms(timeout_ms); }
 
+        // Set proxy for HTTP requests (e.g., "http://user:pass@proxy.example.com:8080")
+        void set_proxy(const std::string &proxy_url) { http_.set_proxy(proxy_url); }
+
+        // Set custom user agent
+        void set_user_agent(const std::string &user_agent) { http_.set_user_agent(user_agent); }
+
         // Get exchange address for the chain
         std::string get_exchange_address() const;
         std::string get_neg_risk_exchange_address() const;

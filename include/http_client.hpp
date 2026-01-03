@@ -39,6 +39,8 @@ namespace polymarket
         void set_timeout_ms(long timeout_ms);
         void set_base_url(const std::string &base_url);
         void add_header(const std::string &header);
+        void set_proxy(const std::string &proxy_url); // e.g., "http://user:pass@proxy.example.com:8080"
+        void set_user_agent(const std::string &user_agent);
 
         // HTTP methods
         HttpResponse get(const std::string &path);
@@ -52,6 +54,7 @@ namespace polymarket
         CURL *curl_;
         struct curl_slist *headers_;
         std::string base_url_;
+        std::string proxy_url_;
         long timeout_ms_;
 
         void init();
