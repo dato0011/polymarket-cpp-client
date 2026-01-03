@@ -148,7 +148,7 @@ int main()
         std::cout << "\n=== Positions ===\n\n";
 
         auto positions = client.get_positions();
-        std::cout << "Positions: " << positions.size() << "\n";
+        std::cout << "All positions: " << positions.size() << "\n";
         for (const auto &pos : positions)
         {
             std::cout << "  " << pos.title << " (" << pos.outcome << ")\n";
@@ -156,6 +156,24 @@ int main()
             std::cout << "    Avg price: " << pos.avg_price << "\n";
             std::cout << "    Current value: $" << pos.current_value << "\n";
             std::cout << "    P&L: $" << pos.cash_pnl << " (" << pos.percent_pnl << "%)\n";
+            std::cout << "    Redeemable: " << (pos.redeemable ? "Yes" : "No") << "\n";
+            std::cout << "    Mergeable: " << (pos.mergeable ? "Yes" : "No") << "\n";
+        }
+
+        // Get redeemable positions (market resolved, user holds winning outcome)
+        auto redeemable = client.get_redeemable_positions();
+        std::cout << "\nRedeemable positions: " << redeemable.size() << "\n";
+        for (const auto &pos : redeemable)
+        {
+            std::cout << "  " << pos.title << " (" << pos.outcome << ") - " << pos.size << " shares\n";
+        }
+
+        // Get mergeable positions (user holds both Yes and No outcomes)
+        auto mergeable = client.get_mergeable_positions();
+        std::cout << "\nMergeable positions: " << mergeable.size() << "\n";
+        for (const auto &pos : mergeable)
+        {
+            std::cout << "  " << pos.title << " (" << pos.outcome << ") - " << pos.size << " shares\n";
         }
 
         // ============================================================

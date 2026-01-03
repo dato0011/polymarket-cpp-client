@@ -1276,6 +1276,38 @@ namespace polymarket
         return result;
     }
 
+    std::vector<ClobClient::Position> ClobClient::get_redeemable_positions(const std::string &user_address)
+    {
+        auto all_positions = get_positions(user_address);
+        std::vector<Position> result;
+
+        for (const auto &pos : all_positions)
+        {
+            if (pos.redeemable)
+            {
+                result.push_back(pos);
+            }
+        }
+
+        return result;
+    }
+
+    std::vector<ClobClient::Position> ClobClient::get_mergeable_positions(const std::string &user_address)
+    {
+        auto all_positions = get_positions(user_address);
+        std::vector<Position> result;
+
+        for (const auto &pos : all_positions)
+        {
+            if (pos.mergeable)
+            {
+                result.push_back(pos);
+            }
+        }
+
+        return result;
+    }
+
     // ============================================================
     // JSON PARSING HELPERS
     // ============================================================

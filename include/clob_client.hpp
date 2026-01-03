@@ -356,6 +356,12 @@ namespace polymarket
         // Get user positions from Data API
         std::vector<Position> get_positions(const std::string &user_address = "");
 
+        // Get positions that can be redeemed (market resolved, user holds winning outcome)
+        std::vector<Position> get_redeemable_positions(const std::string &user_address = "");
+
+        // Get positions that can be merged (user holds both Yes and No outcomes)
+        std::vector<Position> get_mergeable_positions(const std::string &user_address = "");
+
     private:
         HttpClient http_;
         int chain_id_;

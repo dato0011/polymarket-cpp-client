@@ -117,6 +117,9 @@ if(POLYMARKET_CLIENT_BUILD_EXAMPLES)
     add_executable(rest_example examples/rest_example.cpp)
     target_link_libraries(rest_example PRIVATE polymarket::client)
 
+    add_executable(test_positions examples/test_positions.cpp)
+    target_link_libraries(test_positions PRIVATE polymarket::client)
+
     add_executable(sign_example examples/sign_example.cpp)
     target_link_libraries(sign_example PRIVATE polymarket::client)
 
