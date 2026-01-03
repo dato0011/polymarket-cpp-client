@@ -321,6 +321,33 @@ namespace polymarket
         // Set custom user agent
         void set_user_agent(const std::string &user_agent) { http_.set_user_agent(user_agent); }
 
+        // DNS cache timeout (default: 60s)
+        void set_dns_cache_timeout(long seconds) { http_.set_dns_cache_timeout(seconds); }
+
+        // TCP keepalive probe interval
+        void set_keepalive_interval(long seconds) { http_.set_keepalive_interval(seconds); }
+
+        // ============================================================
+        // CONNECTION WARMING (for low-latency trading)
+        // ============================================================
+
+        // Pre-warm TCP/TLS connection to reduce first-request latency
+        // Call this after startup to establish connection before trading
+        bool warm_connection();
+
+        // Start background heartbeat to keep connection alive (default: 25s interval)
+        // This prevents the server from closing the keep-alive connection
+        void start_heartbeat(long interval_seconds = 25) { http_.start_heartbeat(interval_seconds); }
+
+        // Stop background heartbeat
+        void stop_heartbeat() { http_.stop_heartbeat(); }
+
+        // Check if heartbeat is running
+        bool is_heartbeat_running() const { return http_.is_heartbeat_running(); }
+
+        // Get connection statistics
+        HttpClient::ConnectionStats get_connection_stats() const { return http_.get_stats(); }
+
         // Get exchange address for the chain
         std::string get_exchange_address() const;
         std::string get_neg_risk_exchange_address() const;

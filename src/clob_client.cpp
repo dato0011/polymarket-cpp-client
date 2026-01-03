@@ -53,6 +53,22 @@ namespace polymarket
         return NEG_RISK_EXCHANGE_ADDRESS;
     }
 
+    bool ClobClient::warm_connection()
+    {
+        // Step 1: Hit a cheap GET endpoint to establish TCP/TLS
+        auto time_response = get_server_time();
+        if (!time_response.has_value())
+        {
+            return false;
+        }
+
+        // Step 2: Hit markets endpoint to warm Cloudflare cache
+        auto markets = get_markets("");
+
+        // Connection is now warm
+        return true;
+    }
+
     std::string ClobClient::get_address() const
     {
         if (!order_signer_)

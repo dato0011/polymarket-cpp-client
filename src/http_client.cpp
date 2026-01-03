@@ -1,6 +1,7 @@
 #include "http_client.hpp"
 #include <chrono>
 #include <stdexcept>
+#include <thread>
 
 namespace polymarket
 {
@@ -27,19 +28,32 @@ namespace polymarket
     }
 
     HttpClient::HttpClient()
-        : curl_(nullptr), headers_(nullptr), timeout_ms_(5000)
+        : curl_(nullptr), headers_(nullptr), timeout_ms_(5000),
+          dns_cache_timeout_(60), keepalive_interval_(20),
+          heartbeat_running_(false),
+          total_requests_(0), reused_connections_(0),
+          total_latency_ms_(0.0), last_latency_ms_(0.0),
+          connection_warm_(false)
     {
         init();
     }
 
     HttpClient::~HttpClient()
     {
+        stop_heartbeat();
         cleanup();
     }
 
     HttpClient::HttpClient(HttpClient &&other) noexcept
-        : curl_(other.curl_), headers_(other.headers_), base_url_(std::move(other.base_url_)), proxy_url_(std::move(other.proxy_url_)), timeout_ms_(other.timeout_ms_)
+        : curl_(other.curl_), headers_(other.headers_), base_url_(std::move(other.base_url_)),
+          proxy_url_(std::move(other.proxy_url_)), timeout_ms_(other.timeout_ms_),
+          dns_cache_timeout_(other.dns_cache_timeout_), keepalive_interval_(other.keepalive_interval_),
+          heartbeat_running_(false),
+          total_requests_(other.total_requests_), reused_connections_(other.reused_connections_),
+          total_latency_ms_(other.total_latency_ms_), last_latency_ms_(other.last_latency_ms_),
+          connection_warm_(other.connection_warm_)
     {
+        other.stop_heartbeat();
         other.curl_ = nullptr;
         other.headers_ = nullptr;
     }
@@ -48,12 +62,21 @@ namespace polymarket
     {
         if (this != &other)
         {
+            stop_heartbeat();
+            other.stop_heartbeat();
             cleanup();
             curl_ = other.curl_;
             headers_ = other.headers_;
             base_url_ = std::move(other.base_url_);
             proxy_url_ = std::move(other.proxy_url_);
             timeout_ms_ = other.timeout_ms_;
+            dns_cache_timeout_ = other.dns_cache_timeout_;
+            keepalive_interval_ = other.keepalive_interval_;
+            total_requests_ = other.total_requests_;
+            reused_connections_ = other.reused_connections_;
+            total_latency_ms_ = other.total_latency_ms_;
+            last_latency_ms_ = other.last_latency_ms_;
+            connection_warm_ = other.connection_warm_;
             other.curl_ = nullptr;
             other.headers_ = nullptr;
         }
@@ -69,11 +92,21 @@ namespace polymarket
         }
 
         // Set default options for performance
-        curl_easy_setopt(curl_, CURLOPT_TCP_NODELAY, 1L);
-        curl_easy_setopt(curl_, CURLOPT_TCP_KEEPALIVE, 1L);
+        curl_easy_setopt(curl_, CURLOPT_TCP_NODELAY, 1L);    // Disable Nagle's algorithm
+        curl_easy_setopt(curl_, CURLOPT_TCP_KEEPALIVE, 1L);  // Enable TCP keepalive
+        curl_easy_setopt(curl_, CURLOPT_TCP_KEEPIDLE, 20L);  // Start keepalive after 20s idle
+        curl_easy_setopt(curl_, CURLOPT_TCP_KEEPINTVL, 20L); // Keepalive probe interval
         curl_easy_setopt(curl_, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl_, CURLOPT_MAXREDIRS, 3L);
         curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, write_callback);
+
+        // Connection reuse - critical for keeping TCP/TLS hot
+        curl_easy_setopt(curl_, CURLOPT_FORBID_REUSE, 0L);                      // Allow connection reuse
+        curl_easy_setopt(curl_, CURLOPT_FRESH_CONNECT, 0L);                     // Reuse existing connections
+        curl_easy_setopt(curl_, CURLOPT_DNS_CACHE_TIMEOUT, dns_cache_timeout_); // DNS cache TTL
+
+        // HTTP/1.1 keep-alive
+        add_header("Connection: keep-alive");
 
         // SSL options
         curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYPEER, 1L);
@@ -142,6 +175,25 @@ namespace polymarket
         }
     }
 
+    void HttpClient::set_dns_cache_timeout(long seconds)
+    {
+        dns_cache_timeout_ = seconds;
+        if (curl_)
+        {
+            curl_easy_setopt(curl_, CURLOPT_DNS_CACHE_TIMEOUT, seconds);
+        }
+    }
+
+    void HttpClient::set_keepalive_interval(long seconds)
+    {
+        keepalive_interval_ = seconds;
+        if (curl_)
+        {
+            curl_easy_setopt(curl_, CURLOPT_TCP_KEEPIDLE, seconds);
+            curl_easy_setopt(curl_, CURLOPT_TCP_KEEPINTVL, seconds);
+        }
+    }
+
     size_t HttpClient::write_callback(char *ptr, size_t size, size_t nmemb, void *userdata)
     {
         auto *response = static_cast<std::string *>(userdata);
@@ -174,6 +226,22 @@ namespace polymarket
         }
 
         curl_easy_getinfo(curl_, CURLINFO_RESPONSE_CODE, &response.status_code);
+
+        // Track connection reuse stats
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            total_requests_++;
+            total_latency_ms_ += response.elapsed_ms;
+            last_latency_ms_ = response.elapsed_ms;
+
+            // Check if connection was reused
+            long reused = 0;
+            curl_easy_getinfo(curl_, CURLINFO_NUM_CONNECTS, &reused);
+            if (reused == 0)
+            {
+                reused_connections_++;
+            }
+        }
 
         return response;
     }
@@ -297,6 +365,86 @@ namespace polymarket
         headers_ = original_headers;
 
         return response;
+    }
+
+    // ============================================================
+    // Connection Warming and Heartbeat
+    // ============================================================
+
+    bool HttpClient::warm_connection()
+    {
+        if (base_url_.empty())
+        {
+            return false;
+        }
+
+        // Hit a cheap endpoint to establish TCP/TLS
+        auto response = get("/");
+        if (response.ok() || response.status_code == 404)
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            connection_warm_ = true;
+            return true;
+        }
+        return false;
+    }
+
+    void HttpClient::start_heartbeat(long interval_seconds)
+    {
+        if (heartbeat_running_.load())
+        {
+            return; // Already running
+        }
+
+        heartbeat_running_.store(true);
+        heartbeat_thread_ = std::thread([this, interval_seconds]()
+                                        {
+            while (heartbeat_running_.load())
+            {
+                // Sleep in small increments to allow quick shutdown
+                for (long i = 0; i < interval_seconds * 10 && heartbeat_running_.load(); ++i)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+
+                if (!heartbeat_running_.load())
+                {
+                    break;
+                }
+
+                // Send a lightweight GET to keep connection alive
+                std::lock_guard<std::mutex> lock(curl_mutex_);
+                if (curl_ && !base_url_.empty())
+                {
+                    get("/");
+                }
+            } });
+    }
+
+    void HttpClient::stop_heartbeat()
+    {
+        heartbeat_running_.store(false);
+        if (heartbeat_thread_.joinable())
+        {
+            heartbeat_thread_.join();
+        }
+    }
+
+    bool HttpClient::is_heartbeat_running() const
+    {
+        return heartbeat_running_.load();
+    }
+
+    HttpClient::ConnectionStats HttpClient::get_stats() const
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        ConnectionStats stats;
+        stats.total_requests = total_requests_;
+        stats.reused_connections = reused_connections_;
+        stats.avg_latency_ms = total_requests_ > 0 ? total_latency_ms_ / total_requests_ : 0.0;
+        stats.last_latency_ms = last_latency_ms_;
+        stats.connection_warm = connection_warm_;
+        return stats;
     }
 
 } // namespace polymarket

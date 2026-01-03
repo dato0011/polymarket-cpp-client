@@ -80,6 +80,44 @@ http.set_base_url("https://clob.polymarket.com");
 http.set_proxy("http://user:pass@proxy.example.com:8080");
 ```
 
+## Low-Latency Trading (Keep TCP/TLS Hot)
+
+For high-frequency trading, minimize latency by keeping TCP/TLS connections warm:
+
+```cpp
+#include "clob_client.hpp"
+
+polymarket::ClobClient client("https://clob.polymarket.com", 137,
+                               private_key, creds);
+
+// 1. Pre-warm connection after startup (establishes TCP/TLS)
+client.warm_connection();
+
+// 2. Start background heartbeat to keep connection alive (every 25s)
+client.start_heartbeat(25);
+
+// 3. Now your orders will hit ~25-35ms instead of ~40-60ms
+auto response = client.create_and_post_order(params);
+
+// 4. Check connection stats
+auto stats = client.get_connection_stats();
+std::cout << "Avg latency: " << stats.avg_latency_ms << "ms\n";
+std::cout << "Reused connections: " << stats.reused_connections << "\n";
+
+// 5. Stop heartbeat when done
+client.stop_heartbeat();
+```
+
+**Key optimizations enabled:**
+
+- **Connection reuse**: Single CURL handle with `FORBID_REUSE=0`
+- **HTTP/1.1 keep-alive**: `Connection: keep-alive` header
+- **TCP keepalive**: Probes every 20s to prevent socket close
+- **DNS caching**: 60s TTL (configurable via `set_dns_cache_timeout()`)
+- **TCP_NODELAY**: Nagle's algorithm disabled for low latency
+
+**Expected gains**: First request ~40-60ms → subsequent requests ~25-35ms.
+
 ## Neg-Risk Markets
 
 The client automatically detects neg_risk markets and uses the appropriate exchange address for order signing:
