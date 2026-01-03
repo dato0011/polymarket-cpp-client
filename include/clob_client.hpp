@@ -121,6 +121,7 @@ namespace polymarket
         std::string fee_rate_bps = "0";
         std::string expiration = "0";
         std::string nonce = "0";
+        std::optional<bool> neg_risk; // If set, skips API call to fetch neg_risk
     };
 
     // Create market order parameters
@@ -228,8 +229,6 @@ namespace polymarket
 
         // Order creation (creates signed order, does not post)
         SignedOrder create_order(const CreateOrderParams &params);
-        // Overload with cached neg_risk to avoid HTTP call
-        SignedOrder create_order(const CreateOrderParams &params, bool is_neg_risk);
         SignedOrder create_market_order(const CreateMarketOrderParams &params);
 
         // Order posting
@@ -325,6 +324,37 @@ namespace polymarket
         // Get exchange address for the chain
         std::string get_exchange_address() const;
         std::string get_neg_risk_exchange_address() const;
+
+        // ============================================================
+        // POSITION MANAGEMENT (Data API)
+        // ============================================================
+
+        // Position info from Data API
+        struct Position
+        {
+            std::string proxy_wallet;
+            std::string asset; // Token ID
+            std::string condition_id;
+            double size; // Number of shares
+            double avg_price;
+            double initial_value;
+            double current_value;
+            double cash_pnl;
+            double percent_pnl;
+            double cur_price;
+            bool redeemable;
+            bool mergeable;
+            std::string title;
+            std::string slug;
+            std::string outcome;        // "Yes" or "No"
+            int outcome_index;          // 0 or 1
+            std::string opposite_asset; // Token ID of opposite outcome
+            std::string end_date;
+            bool negative_risk;
+        };
+
+        // Get user positions from Data API
+        std::vector<Position> get_positions(const std::string &user_address = "");
 
     private:
         HttpClient http_;

@@ -17,6 +17,9 @@ namespace polymarket
     static const std::string EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
     static const std::string NEG_RISK_EXCHANGE_ADDRESS = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
 
+    // Data API URL for positions
+    static const std::string DATA_API_URL = "https://data-api.polymarket.com";
+
     ClobClient::ClobClient(const std::string &base_url, int chain_id)
         : chain_id_(chain_id), base_url_(base_url), sig_type_(SignatureType::EOA)
     {
@@ -648,21 +651,18 @@ namespace polymarket
             throw std::runtime_error("Client not authenticated");
         }
 
-        // Determine exchange address based on neg_risk (makes HTTP call)
-        auto neg_risk_info = get_neg_risk(params.token_id);
-        bool is_neg_risk = neg_risk_info && neg_risk_info->neg_risk;
-
-        return create_order(params, is_neg_risk);
-    }
-
-    SignedOrder ClobClient::create_order(const CreateOrderParams &params, bool is_neg_risk)
-    {
-        if (!order_signer_)
+        // Use cached neg_risk if provided, otherwise fetch from API
+        bool is_neg_risk = false;
+        if (params.neg_risk.has_value())
         {
-            throw std::runtime_error("Client not authenticated");
+            is_neg_risk = params.neg_risk.value();
+        }
+        else
+        {
+            auto neg_risk_info = get_neg_risk(params.token_id);
+            is_neg_risk = neg_risk_info && neg_risk_info->neg_risk;
         }
 
-        // Use cached neg_risk value to determine exchange address
         std::string exchange_addr = is_neg_risk ? NEG_RISK_EXCHANGE_ADDRESS : EXCHANGE_ADDRESS;
 
         // Calculate amounts
@@ -1205,6 +1205,75 @@ namespace polymarket
         {
             return std::nullopt;
         }
+    }
+
+    // ============================================================
+    // POSITION MANAGEMENT (Data API)
+    // ============================================================
+
+    std::vector<ClobClient::Position> ClobClient::get_positions(const std::string &user_address)
+    {
+        std::vector<Position> result;
+
+        std::string address = user_address.empty() ? get_funder_address() : user_address;
+        if (address.empty())
+        {
+            address = get_address();
+        }
+        if (address.empty())
+        {
+            return result;
+        }
+
+        // Use a separate HTTP client for Data API
+        HttpClient data_http;
+        data_http.set_base_url(DATA_API_URL);
+        data_http.set_timeout_ms(10000);
+
+        auto response = data_http.get("/positions?user=" + address);
+        if (!response.ok())
+        {
+            return result;
+        }
+
+        try
+        {
+            auto j = json::parse(response.body);
+            if (!j.is_array())
+            {
+                return result;
+            }
+
+            for (const auto &item : j)
+            {
+                Position pos;
+                pos.proxy_wallet = item.value("proxyWallet", "");
+                pos.asset = item.value("asset", "");
+                pos.condition_id = item.value("conditionId", "");
+                pos.size = item.value("size", 0.0);
+                pos.avg_price = item.value("avgPrice", 0.0);
+                pos.initial_value = item.value("initialValue", 0.0);
+                pos.current_value = item.value("currentValue", 0.0);
+                pos.cash_pnl = item.value("cashPnl", 0.0);
+                pos.percent_pnl = item.value("percentPnl", 0.0);
+                pos.cur_price = item.value("curPrice", 0.0);
+                pos.redeemable = item.value("redeemable", false);
+                pos.mergeable = item.value("mergeable", false);
+                pos.title = item.value("title", "");
+                pos.slug = item.value("slug", "");
+                pos.outcome = item.value("outcome", "");
+                pos.outcome_index = item.value("outcomeIndex", 0);
+                pos.opposite_asset = item.value("oppositeAsset", "");
+                pos.end_date = item.value("endDate", "");
+                pos.negative_risk = item.value("negativeRisk", false);
+                result.push_back(pos);
+            }
+        }
+        catch (...)
+        {
+        }
+
+        return result;
     }
 
     // ============================================================
