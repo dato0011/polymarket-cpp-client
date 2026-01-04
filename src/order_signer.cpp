@@ -73,20 +73,52 @@ namespace polymarket
 
     std::string to_wei(double amount, int decimals, bool round_down)
     {
-        long double multiplier = 1;
-        for (int i = 0; i < decimals; i++)
-            multiplier *= 10;
-        long double wei_ld = amount * multiplier;
-        uint64_t wei;
-        if (round_down)
+        // Use string-based conversion to avoid floating point precision issues
+        // This ensures exact decimal representation for API requirements
+
+        // First, round the amount to a reasonable precision to avoid fp artifacts
+        // Add small epsilon and truncate to handle cases like 3.0299999999 -> 3.03
+        double rounded = round_down
+                             ? std::floor(amount * 1e10) / 1e10  // Floor to 10 decimals
+                             : std::round(amount * 1e10) / 1e10; // Round to 10 decimals
+
+        // Convert to string with high precision
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(10) << rounded;
+        std::string str = oss.str();
+
+        // Find decimal point
+        size_t dot_pos = str.find('.');
+        if (dot_pos == std::string::npos)
         {
-            wei = static_cast<uint64_t>(wei_ld); // Truncate (floor for positive numbers)
+            // No decimal point - just append zeros
+            for (int i = 0; i < decimals; i++)
+                str += '0';
+            return str;
         }
-        else
+
+        // Get integer and fractional parts
+        std::string int_part = str.substr(0, dot_pos);
+        std::string frac_part = str.substr(dot_pos + 1);
+
+        // Pad or truncate fractional part to desired decimals
+        while (frac_part.length() < static_cast<size_t>(decimals))
         {
-            wei = static_cast<uint64_t>(wei_ld + 0.5); // Round to nearest
+            frac_part += '0';
         }
-        return std::to_string(wei);
+        if (frac_part.length() > static_cast<size_t>(decimals))
+        {
+            frac_part = frac_part.substr(0, decimals);
+        }
+
+        // Combine and remove leading zeros (but keep at least one digit)
+        std::string result = int_part + frac_part;
+        size_t first_nonzero = result.find_first_not_of('0');
+        if (first_nonzero == std::string::npos)
+        {
+            return "0";
+        }
+        return result.substr(first_nonzero);
     }
 
     std::string generate_salt()
