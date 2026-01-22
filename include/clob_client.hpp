@@ -221,7 +221,7 @@ namespace polymarket
         ApiCredentials derive_api_key();
         ApiCredentials create_or_derive_api_key();
         std::vector<std::string> get_api_keys();
-        bool delete_api_key();
+        bool delete_api_key() const;
 
         // ============================================================
         // AUTHENTICATED ENDPOINTS (L2 - Trading)
@@ -381,7 +381,7 @@ namespace polymarket
         };
 
         // Get user positions from Data API
-        std::vector<Position> get_positions(const std::string &user_address = "");
+        std::vector<Position> get_positions(const std::string &user_address = "") const;
 
         // Get positions that can be redeemed (market resolved, user holds winning outcome)
         std::vector<Position> get_redeemable_positions(const std::string &user_address = "");
@@ -403,17 +403,22 @@ namespace polymarket
         // Helper methods
         std::map<std::string, std::string> get_l2_headers(const std::string &method,
                                                           const std::string &path,
-                                                          const std::string &body = "");
+                                                          const std::string &body = "") const;
 
-        std::string order_type_to_string(OrderType type);
-        std::string order_side_to_string(OrderSide side);
+        static std::string order_type_to_string(OrderType type);
+
+        static std::string order_side_to_string(OrderSide side);
 
         // JSON parsing helpers
-        std::vector<ClobMarket> parse_markets(const std::string &json);
-        std::optional<Orderbook> parse_orderbook(const std::string &json);
-        OrderResponse parse_order_response(const std::string &json);
-        std::vector<OpenOrder> parse_open_orders(const std::string &json);
-        std::vector<Trade> parse_trades(const std::string &json);
+        static std::vector<ClobMarket> parse_markets(const std::string &json);
+
+        static std::optional<Orderbook> parse_orderbook(const std::string &json);
+
+        static OrderResponse parse_order_response(const std::string &json);
+
+        static std::vector<OpenOrder> parse_open_orders(const std::string &json);
+
+        static std::vector<Trade> parse_trades(const std::string &json);
     };
 
 } // namespace polymarket

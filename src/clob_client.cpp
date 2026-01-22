@@ -3,10 +3,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <memory>
-#include <sstream>
-#include <iomanip>
 #include <stdexcept>
-#include <chrono>
 
 using json = nlohmann::json;
 
@@ -78,14 +75,13 @@ namespace polymarket
 
     std::map<std::string, std::string> ClobClient::get_l2_headers(const std::string &method,
                                                                   const std::string &path,
-                                                                  const std::string &body)
-    {
+                                                                  const std::string &body) const {
         if (!order_signer_ || !api_creds_)
         {
             throw std::runtime_error("Client not authenticated");
         }
 
-        auto headers = order_signer_->generate_l2_headers(*api_creds_, method, path, body, funder_address_);
+        auto headers = order_signer_->generate_l2_headers(*api_creds_, method, path, body);
 
         std::map<std::string, std::string> result;
         result["POLY_ADDRESS"] = headers.poly_address;
@@ -647,8 +643,7 @@ namespace polymarket
         return result;
     }
 
-    bool ClobClient::delete_api_key()
-    {
+    bool ClobClient::delete_api_key() const {
         auto headers = get_l2_headers("DELETE", "/auth/api-key", "");
 
         // Need to add DELETE method to HttpClient - for now use POST with method override
@@ -939,9 +934,11 @@ namespace polymarket
 
     std::optional<BalanceAllowance> ClobClient::get_balance_allowance(const std::string &asset_type)
     {
-        std::string path = "/balance-allowance?asset_type=" + asset_type;
-        auto headers = get_l2_headers("GET", path, "");
-        auto response = http_.get(path, headers);
+        std::string base_path = "/balance-allowance";
+        std::string sig_type = std::to_string(static_cast<int>(sig_type_));
+        std::string path_with_params = base_path + "?asset_type=COLLATERAL&signature_type=" + sig_type;
+        auto headers = get_l2_headers("GET", base_path, "");
+        auto response = http_.get(path_with_params, headers);
 
         if (!response.ok())
             return std::nullopt;
@@ -1227,8 +1224,7 @@ namespace polymarket
     // POSITION MANAGEMENT (Data API)
     // ============================================================
 
-    std::vector<ClobClient::Position> ClobClient::get_positions(const std::string &user_address)
-    {
+    std::vector<ClobClient::Position> ClobClient::get_positions(const std::string &user_address) const {
         std::vector<Position> result;
 
         std::string address = user_address.empty() ? get_funder_address() : user_address;

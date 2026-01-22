@@ -613,8 +613,7 @@ namespace polymarket
     OrderSigner::L2Headers OrderSigner::generate_l2_headers(const ApiCredentials &creds,
                                                             const std::string &method,
                                                             const std::string &path,
-                                                            const std::string &body,
-                                                            const std::string &funder_address)
+                                                            const std::string &body)
     {
         auto now = std::chrono::system_clock::now();
         auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();

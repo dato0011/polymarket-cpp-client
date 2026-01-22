@@ -114,8 +114,7 @@ namespace polymarket
             std::string poly_secret;
         };
         L2Headers generate_l2_headers(const ApiCredentials &creds, const std::string &method,
-                                      const std::string &path, const std::string &body = "",
-                                      const std::string &funder_address = "");
+                                      const std::string &path, const std::string &body = "");
 
     private:
         std::string private_key_;

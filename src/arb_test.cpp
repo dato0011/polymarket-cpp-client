@@ -612,7 +612,7 @@ int main(int argc, char *argv[])
     std::cout << "    Batch payload size: " << body_str.size() << " bytes\n";
 
     // Generate L2 headers for batch endpoint
-    auto l2 = signer.generate_l2_headers(creds, "POST", "/orders", body_str, funder_address);
+    auto l2 = signer.generate_l2_headers(creds, "POST", "/orders", body_str);
 
     std::map<std::string, std::string> headers;
     headers["Content-Type"] = "application/json";
