@@ -226,7 +226,7 @@ int main(int argc, char *argv[])
             std::cout << "\n[6] Testing authenticated API call (GET /data/orders)...\n";
 
             // Generate L2 headers for the actual endpoint we're calling
-            auto headers = signer.generate_l2_headers(creds, "GET", "/data/orders", "", funder_address);
+            auto headers = signer.generate_l2_headers(creds, "GET", "/data/orders", "");
             std::cout << "    POLY_ADDRESS: " << headers.poly_address << "\n";
             std::cout << "    POLY_SIGNATURE: " << headers.poly_signature.substr(0, 30) << "...\n";
 
@@ -438,7 +438,7 @@ int main(int argc, char *argv[])
             // Add L2 auth headers if we have credentials
             if (have_creds)
             {
-                auto l2 = signer.generate_l2_headers(creds, "POST", "/order", body_str, funder_address);
+                auto l2 = signer.generate_l2_headers(creds, "POST", "/order", body_str);
                 post_headers["POLY_ADDRESS"] = l2.poly_address;
                 post_headers["POLY_SIGNATURE"] = l2.poly_signature;
                 post_headers["POLY_TIMESTAMP"] = l2.poly_timestamp;
