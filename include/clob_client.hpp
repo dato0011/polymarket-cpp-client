@@ -131,6 +131,13 @@ namespace polymarket
         double amount; // USDC for BUY, shares for SELL
         OrderSide side;
         std::optional<double> price; // Optional price limit
+        OrderType order_type = OrderType::FOK;
+        std::string fee_rate_bps = "0";
+        std::string expiration = "0";
+        std::string nonce = "0";
+        std::string taker = "0x0000000000000000000000000000000000000000";
+        std::optional<std::string> tick_size; // Optional tick size override (e.g. "0.01")
+        std::optional<bool> neg_risk;         // If set, skips API call to fetch neg_risk
     };
 
     // Batch order entry
@@ -177,6 +184,8 @@ namespace polymarket
         // Orderbook
         std::optional<Orderbook> get_order_book(const std::string &token_id);
         std::map<std::string, Orderbook> get_order_books(const std::vector<std::string> &token_ids);
+        double calculate_market_price(const std::string &token_id, OrderSide side, double amount,
+                                      OrderType order_type = OrderType::FOK);
 
         // Prices
         std::optional<PriceInfo> get_price(const std::string &token_id, const std::string &side = "buy");
@@ -195,6 +204,7 @@ namespace polymarket
         // Market info
         std::optional<TickSizeInfo> get_tick_size(const std::string &token_id);
         std::optional<NegRiskInfo> get_neg_risk(const std::string &token_id);
+        std::optional<int> get_fee_rate_bps(const std::string &token_id);
 
         // Prices history
         struct PriceHistoryPoint
@@ -230,16 +240,20 @@ namespace polymarket
         // Order creation (creates signed order, does not post)
         SignedOrder create_order(const CreateOrderParams &params);
         SignedOrder create_market_order(const CreateMarketOrderParams &params);
+        SignedOrder create_market_order_v2(const CreateMarketOrderParams &params);
 
         // Order posting
-        OrderResponse post_order(const SignedOrder &order, OrderType order_type = OrderType::GTC);
-        std::vector<OrderResponse> post_orders(const std::vector<BatchOrderEntry> &orders);
+        OrderResponse post_order(const SignedOrder &order, OrderType order_type = OrderType::GTC,
+                                 bool post_only = false);
+        std::vector<OrderResponse> post_orders(const std::vector<BatchOrderEntry> &orders,
+                                               bool post_only = false);
 
         // Combined create and post
         OrderResponse create_and_post_order(const CreateOrderParams &params,
                                             OrderType order_type = OrderType::GTC);
         OrderResponse create_and_post_market_order(const CreateMarketOrderParams &params,
                                                    OrderType order_type = OrderType::FAK);
+        OrderResponse create_and_post_market_order_v2(const CreateMarketOrderParams &params);
 
         // Order management
         bool cancel_order(const std::string &order_id);

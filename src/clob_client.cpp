@@ -1,8 +1,13 @@
 #include "clob_client.hpp"
 #include "order_signer.hpp"
 #include <nlohmann/json.hpp>
+#include <cmath>
+#include <iomanip>
+#include <limits>
+#include <map>
 #include <optional>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 
 using json = nlohmann::json;
@@ -16,6 +21,185 @@ namespace polymarket
 
     // Data API URL for positions
     static const std::string DATA_API_URL = "https://data-api.polymarket.com";
+
+    namespace
+    {
+        struct RoundConfig
+        {
+            int price;
+            int size;
+            int amount;
+        };
+
+        const std::map<std::string, RoundConfig> kRoundingConfig = {
+            {"0.1", {1, 2, 3}},
+            {"0.01", {2, 2, 4}},
+            {"0.001", {3, 2, 5}},
+            {"0.0001", {4, 2, 6}},
+        };
+
+        std::string normalize_tick_size(const std::string &tick_size)
+        {
+            std::ostringstream oss;
+            oss.setf(std::ios::fixed);
+            oss << std::setprecision(6) << std::stod(tick_size);
+            std::string normalized = oss.str();
+
+            auto dot = normalized.find('.');
+            if (dot == std::string::npos)
+            {
+                return normalized;
+            }
+
+            size_t end = normalized.size();
+            while (end > dot + 1 && normalized[end - 1] == '0')
+            {
+                --end;
+            }
+            if (end == dot + 1)
+            {
+                end = dot;
+            }
+            normalized.resize(end);
+            return normalized;
+        }
+
+        bool is_tick_size_smaller(const std::string &a, const std::string &b)
+        {
+            return std::stod(a) < std::stod(b);
+        }
+
+        bool price_valid(double price, const std::string &tick_size)
+        {
+            double tick = std::stod(tick_size);
+            return price >= tick && price <= 1.0 - tick;
+        }
+
+        int decimal_places(double value)
+        {
+            if (std::floor(value) == value)
+            {
+                return 0;
+            }
+
+            std::ostringstream oss;
+            oss.setf(std::ios::fixed);
+            oss << std::setprecision(12) << value;
+            std::string str = oss.str();
+
+            auto dot = str.find('.');
+            if (dot == std::string::npos)
+            {
+                return 0;
+            }
+
+            size_t end = str.size();
+            while (end > dot + 1 && str[end - 1] == '0')
+            {
+                --end;
+            }
+            if (end == dot + 1)
+            {
+                return 0;
+            }
+            return static_cast<int>(end - dot - 1);
+        }
+
+        double round_normal(double value, int decimals)
+        {
+            if (decimal_places(value) <= decimals)
+            {
+                return value;
+            }
+            double scale = std::pow(10.0, decimals);
+            return std::round((value + std::numeric_limits<double>::epsilon()) * scale) / scale;
+        }
+
+        double round_down(double value, int decimals)
+        {
+            if (decimal_places(value) <= decimals)
+            {
+                return value;
+            }
+            double scale = std::pow(10.0, decimals);
+            return std::floor(value * scale) / scale;
+        }
+
+        double round_up(double value, int decimals)
+        {
+            if (decimal_places(value) <= decimals)
+            {
+                return value;
+            }
+            double scale = std::pow(10.0, decimals);
+            return std::ceil(value * scale) / scale;
+        }
+
+        RoundConfig get_round_config(const std::string &tick_size)
+        {
+            auto normalized = normalize_tick_size(tick_size);
+            auto it = kRoundingConfig.find(normalized);
+            if (it == kRoundingConfig.end())
+            {
+                throw std::runtime_error("unsupported tick size: " + tick_size);
+            }
+            return it->second;
+        }
+
+        double calculate_buy_market_price(const std::vector<PriceLevel> &positions,
+                                           double amount_to_match,
+                                           OrderType order_type)
+        {
+            if (positions.empty())
+            {
+                throw std::runtime_error("no match");
+            }
+
+            double sum = 0.0;
+            for (auto it = positions.rbegin(); it != positions.rend(); ++it)
+            {
+                sum += it->size * it->price;
+                if (sum >= amount_to_match)
+                {
+                    return it->price;
+                }
+            }
+
+            if (order_type == OrderType::FOK)
+            {
+                throw std::runtime_error("no match");
+            }
+
+            return positions.front().price;
+        }
+
+        double calculate_sell_market_price(const std::vector<PriceLevel> &positions,
+                                            double amount_to_match,
+                                            OrderType order_type)
+        {
+            if (positions.empty())
+            {
+                throw std::runtime_error("no match");
+            }
+
+            double sum = 0.0;
+            for (auto it = positions.rbegin(); it != positions.rend(); ++it)
+            {
+                sum += it->size;
+                if (sum >= amount_to_match)
+                {
+                    return it->price;
+                }
+            }
+
+            if (order_type == OrderType::FOK)
+            {
+                throw std::runtime_error("no match");
+            }
+
+            return positions.front().price;
+        }
+    } // namespace
 
     ClobClient::ClobClient(const std::string &base_url, int chain_id)
         : chain_id_(chain_id), base_url_(base_url), sig_type_(SignatureType::EOA)
@@ -258,6 +442,31 @@ namespace polymarket
         }
 
         return result;
+    }
+
+    double ClobClient::calculate_market_price(const std::string &token_id, OrderSide side, double amount,
+                                              OrderType order_type)
+    {
+        auto book = get_order_book(token_id);
+        if (!book)
+        {
+            throw std::runtime_error("no orderbook");
+        }
+
+        if (side == OrderSide::BUY)
+        {
+            if (book->asks.empty())
+            {
+                throw std::runtime_error("no match");
+            }
+            return calculate_buy_market_price(book->asks, amount, order_type);
+        }
+
+        if (book->bids.empty())
+        {
+            throw std::runtime_error("no match");
+        }
+        return calculate_sell_market_price(book->bids, amount, order_type);
     }
 
     std::optional<PriceInfo> ClobClient::get_price(const std::string &token_id, const std::string &side)
@@ -526,6 +735,27 @@ namespace polymarket
         }
     }
 
+    std::optional<int> ClobClient::get_fee_rate_bps(const std::string &token_id)
+    {
+        auto response = http_.get("/fee-rate?token_id=" + token_id);
+        if (!response.ok())
+            return std::nullopt;
+
+        try
+        {
+            auto j = json::parse(response.body);
+            if (j.contains("base_fee"))
+            {
+                return j.value("base_fee", 0);
+            }
+            return 0;
+        }
+        catch (...)
+        {
+            return std::nullopt;
+        }
+    }
+
     std::vector<ClobClient::PriceHistoryPoint> ClobClient::get_prices_history(
         const std::string &token_id,
         uint64_t start_ts,
@@ -749,24 +979,172 @@ namespace polymarket
         return create_order(order_params);
     }
 
-    OrderResponse ClobClient::post_order(const SignedOrder &order, OrderType order_type)
+    SignedOrder ClobClient::create_market_order_v2(const CreateMarketOrderParams &params)
     {
-        json body;
-        body["order"] = {
-            {"salt", order.salt},
-            {"maker", order.maker},
-            {"signer", order.signer},
-            {"taker", order.taker},
-            {"tokenId", order.token_id},
-            {"makerAmount", order.maker_amount},
-            {"takerAmount", order.taker_amount},
-            {"expiration", order.expiration},
-            {"nonce", order.nonce},
-            {"feeRateBps", order.fee_rate_bps},
-            {"side", order.side == 0 ? "BUY" : "SELL"},
-            {"signatureType", order.signature_type},
-            {"signature", order.signature}};
+        if (!order_signer_)
+        {
+            throw std::runtime_error("Client not authenticated");
+        }
+
+        std::string min_tick_size = "0.01";
+        // if (auto tick_info = get_tick_size(params.token_id))
+        // {
+        //     min_tick_size = tick_info->minimum_tick_size;
+        // }
+
+        std::string tick_size = min_tick_size;
+        if (params.tick_size.has_value() && !params.tick_size->empty())
+        {
+            if (is_tick_size_smaller(*params.tick_size, min_tick_size))
+            {
+                throw std::runtime_error("invalid tick size (" + *params.tick_size +
+                                         "), minimum for the market is " + min_tick_size);
+            }
+            tick_size = *params.tick_size;
+        }
+
+        double price = 0.0;
+        if (params.price.has_value() && *params.price > 0.0)
+        {
+            price = *params.price;
+        }
+        else
+        {
+            price = calculate_market_price(params.token_id, params.side, params.amount, params.order_type);
+        }
+
+        if (!price_valid(price, tick_size))
+        {
+            throw std::runtime_error("invalid price (" + std::to_string(price) + "), min: " + tick_size +
+                                     " - max: " + std::to_string(1.0 - std::stod(tick_size)));
+        }
+
+        bool is_neg_risk = false;
+        if (params.neg_risk.has_value())
+        {
+            is_neg_risk = params.neg_risk.value();
+        }
+        else
+        {
+            auto neg_risk_info = get_neg_risk(params.token_id);
+            is_neg_risk = neg_risk_info && neg_risk_info->neg_risk;
+        }
+
+        constexpr int market_fee_rate_bps = 1000; // TODO
+        // if (auto fee_rate = get_fee_rate_bps(params.token_id))
+        // {
+        //     market_fee_rate_bps = *fee_rate;
+        // }
+
+        std::string exchange_addr = is_neg_risk ? NEG_RISK_EXCHANGE_ADDRESS : EXCHANGE_ADDRESS;
+        RoundConfig round_config = get_round_config(tick_size);
+        double raw_price = round_normal(price, round_config.price);
+
+        double raw_maker_amt = round_down(params.amount, round_config.size);
+        double raw_taker_amt = 0.0;
+        if (params.side == OrderSide::BUY)
+        {
+            raw_taker_amt = raw_maker_amt / raw_price;
+            if (decimal_places(raw_taker_amt) > round_config.amount)
+            {
+                raw_taker_amt = round_up(raw_taker_amt, round_config.amount + 4);
+                if (decimal_places(raw_taker_amt) > round_config.amount)
+                {
+                    raw_taker_amt = round_down(raw_taker_amt, round_config.amount);
+                }
+            }
+        }
+        else if (params.side == OrderSide::SELL)
+        {
+            raw_taker_amt = raw_maker_amt * raw_price;
+            if (decimal_places(raw_taker_amt) > round_config.amount)
+            {
+                raw_taker_amt = round_up(raw_taker_amt, round_config.amount + 4);
+                if (decimal_places(raw_taker_amt) > round_config.amount)
+                {
+                    raw_taker_amt = round_down(raw_taker_amt, round_config.amount);
+                }
+            }
+        }
+        else
+        {
+            throw std::runtime_error("invalid order side");
+        }
+
+        OrderData order_data;
+        order_data.maker = funder_address_.empty() ? order_signer_->address() : funder_address_;
+        order_data.taker = params.taker.empty() ? "0x0000000000000000000000000000000000000000" : params.taker;
+        order_data.token_id = params.token_id;
+        order_data.maker_amount = to_wei(raw_maker_amt, 6);
+        order_data.taker_amount = to_wei(raw_taker_amt, 6);
+        order_data.side = params.side;
+        std::string fee_rate_bps = params.fee_rate_bps.empty() ? "0" : params.fee_rate_bps;
+        if (market_fee_rate_bps > 0)
+        {
+            if (fee_rate_bps != "0")
+            {
+                int provided_fee = 0;
+                try
+                {
+                    provided_fee = std::stoi(fee_rate_bps);
+                }
+                catch (...)
+                {
+                    throw std::runtime_error("invalid fee rate (" + fee_rate_bps + ")");
+                }
+                if (provided_fee != market_fee_rate_bps)
+                {
+                    throw std::runtime_error("invalid fee rate (" + fee_rate_bps +
+                                             "), current market's taker fee: " +
+                                             std::to_string(market_fee_rate_bps));
+                }
+            }
+            fee_rate_bps = std::to_string(market_fee_rate_bps);
+        }
+        order_data.fee_rate_bps = fee_rate_bps;
+        order_data.nonce = params.nonce.empty() ? "0" : params.nonce;
+        order_data.signer = order_signer_->address();
+        order_data.expiration = params.expiration.empty() ? "0" : params.expiration;
+        order_data.signature_type = sig_type_;
+
+        return order_signer_->sign_order(order_data, exchange_addr);
+    }
+
+    OrderResponse ClobClient::post_order(const SignedOrder &order, OrderType order_type, bool post_only)
+    {
+        if (post_only && order_type != OrderType::GTC && order_type != OrderType::GTD)
+        {
+            throw std::runtime_error("post_only is only supported for GTC and GTD orders");
+        }
+        if (!api_creds_)
+        {
+            throw std::runtime_error("Client not authenticated");
+        }
+
+        nlohmann::ordered_json body;
+        nlohmann::ordered_json order_json;
+        order_json["salt"] = std::stoll(order.salt);
+        order_json["maker"] = order.maker;
+        order_json["signer"] = order.signer;
+        order_json["taker"] = order.taker;
+        order_json["tokenId"] = order.token_id;
+        order_json["makerAmount"] = order.maker_amount;
+        order_json["takerAmount"] = order.taker_amount;
+        order_json["side"] = order.side == 0 ? "BUY" : "SELL";
+        order_json["expiration"] = order.expiration;
+        order_json["nonce"] = order.nonce;
+        order_json["feeRateBps"] = order.fee_rate_bps;
+        order_json["signatureType"] = order.signature_type;
+        order_json["signature"] = order.signature;
+
+        body["order"] = order_json;
+        body["owner"] = api_creds_->api_key;
         body["orderType"] = order_type_to_string(order_type);
+        body["deferExec"] = false;
+        if (post_only)
+        {
+            body["postOnly"] = true;
+        }
 
         std::string body_str = body.dump();
         auto headers = get_l2_headers("POST", "/order", body_str);
@@ -775,32 +1153,54 @@ namespace polymarket
         return parse_order_response(response.body);
     }
 
-    std::vector<OrderResponse> ClobClient::post_orders(const std::vector<BatchOrderEntry> &orders)
+    std::vector<OrderResponse> ClobClient::post_orders(const std::vector<BatchOrderEntry> &orders, bool post_only)
     {
         std::vector<OrderResponse> results;
 
         if (orders.empty())
             return results;
 
-        json body = json::array();
+        if (post_only)
+        {
+            for (const auto &entry : orders)
+            {
+                if (entry.order_type != OrderType::GTC && entry.order_type != OrderType::GTD)
+                {
+                    throw std::runtime_error("post_only is only supported for GTC and GTD orders");
+                }
+            }
+        }
+        if (!api_creds_)
+        {
+            throw std::runtime_error("Client not authenticated");
+        }
+
+        nlohmann::ordered_json body = nlohmann::ordered_json::array();
         for (const auto &entry : orders)
         {
-            json order_json;
-            order_json["order"] = {
-                {"salt", entry.order.salt},
-                {"maker", entry.order.maker},
-                {"signer", entry.order.signer},
-                {"taker", entry.order.taker},
-                {"tokenId", entry.order.token_id},
-                {"makerAmount", entry.order.maker_amount},
-                {"takerAmount", entry.order.taker_amount},
-                {"expiration", entry.order.expiration},
-                {"nonce", entry.order.nonce},
-                {"feeRateBps", entry.order.fee_rate_bps},
-                {"side", entry.order.side == 0 ? "BUY" : "SELL"},
-                {"signatureType", entry.order.signature_type},
-                {"signature", entry.order.signature}};
+            nlohmann::ordered_json order_json;
+            nlohmann::ordered_json signed_json;
+            signed_json["salt"] = std::stoll(entry.order.salt);
+            signed_json["maker"] = entry.order.maker;
+            signed_json["signer"] = entry.order.signer;
+            signed_json["taker"] = entry.order.taker;
+            signed_json["tokenId"] = entry.order.token_id;
+            signed_json["makerAmount"] = entry.order.maker_amount;
+            signed_json["takerAmount"] = entry.order.taker_amount;
+            signed_json["side"] = entry.order.side == 0 ? "BUY" : "SELL";
+            signed_json["expiration"] = entry.order.expiration;
+            signed_json["nonce"] = entry.order.nonce;
+            signed_json["feeRateBps"] = entry.order.fee_rate_bps;
+            signed_json["signatureType"] = entry.order.signature_type;
+            signed_json["signature"] = entry.order.signature;
+            order_json["order"] = signed_json;
+            order_json["owner"] = api_creds_->api_key;
             order_json["orderType"] = order_type_to_string(entry.order_type);
+            order_json["deferExec"] = false;
+            if (post_only)
+            {
+                order_json["postOnly"] = true;
+            }
             body.push_back(order_json);
         }
 
@@ -838,6 +1238,12 @@ namespace polymarket
     {
         auto signed_order = create_market_order(params);
         return post_order(signed_order, order_type);
+    }
+
+    OrderResponse ClobClient::create_and_post_market_order_v2(const CreateMarketOrderParams &params)
+    {
+        auto signed_order = create_market_order_v2(params);
+        return post_order(signed_order, params.order_type);
     }
 
     bool ClobClient::cancel_order(const std::string &order_id)
