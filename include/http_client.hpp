@@ -138,6 +138,7 @@ namespace polymarket
         void enqueue_async_request(std::unique_ptr<AsyncRequest> request);
         void ensure_async_worker();
         void stop_async_worker();
+        size_t poll_async_internal(long timeout_ms);
 
         static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata);
     };

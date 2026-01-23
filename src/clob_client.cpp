@@ -1321,6 +1321,7 @@ namespace polymarket
             OrderResponse response;
             response.success = false;
             response.error_msg = message;
+            response.client_order_id = state->params.client_order_id;
             if (state->callback)
             {
                 state->callback(response);
@@ -1598,6 +1599,7 @@ namespace polymarket
                                  if (state->callback && !state->done)
                                  {
                                      state->done = true;
+                                     order_response.client_order_id = state->params.client_order_id;
                                      state->callback(order_response);
                                  }
                              });

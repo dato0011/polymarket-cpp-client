@@ -28,6 +28,7 @@ namespace polymarket
         bool success;
         std::string error_msg;
         std::string order_id;
+        std::string client_order_id;
         std::vector<std::string> transaction_hashes;
         std::string status;
         std::string taking_amount; // Shares received
@@ -135,6 +136,7 @@ namespace polymarket
         OrderType order_type = OrderType::FOK;
         std::string fee_rate_bps = "0";
         bool fee_rate_bps_provided = false; // If true, uses fee_rate_bps without fetching
+        std::string client_order_id;
         std::string expiration = "0";
         std::string nonce = "0";
         std::string taker = "0x0000000000000000000000000000000000000000";

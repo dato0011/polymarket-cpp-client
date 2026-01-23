@@ -631,11 +631,11 @@ namespace polymarket
         enqueue_async_request(std::move(request));
     }
 
-    void HttpClient::poll_async(long timeout_ms)
+    size_t HttpClient::poll_async_internal(long timeout_ms)
     {
         if (!multi_)
         {
-            return;
+            return 0;
         }
 
         std::vector<std::pair<AsyncCallback, HttpResponse>> completed;
@@ -715,6 +715,12 @@ namespace polymarket
                 entry.first(entry.second);
             }
         }
+        return completed.size();
+    }
+
+    void HttpClient::poll_async(long timeout_ms)
+    {
+        poll_async_internal(timeout_ms);
     }
 
     size_t HttpClient::pending_async() const
@@ -739,8 +745,19 @@ namespace polymarket
                 {
                     std::unique_lock<std::mutex> lock(async_mutex_);
                     async_cv_.wait_for(lock, std::chrono::milliseconds(1));
+                    continue;
                 }
-                poll_async(1);
+                size_t completed = poll_async_internal(0);
+                if (completed == 0)
+                {
+                    long timeout_ms = 1;
+                    curl_multi_timeout(multi_, &timeout_ms);
+                    if (timeout_ms < 0 || timeout_ms > 1)
+                    {
+                        timeout_ms = 1;
+                    }
+                    poll_async_internal(timeout_ms);
+                }
             } });
     }
 
