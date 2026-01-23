@@ -1332,45 +1332,6 @@ namespace polymarket
         auto resolve_fee_rate = std::make_shared<std::function<void()>>();
         auto submit_order = std::make_shared<std::function<void()>>();
 
-        if (params.strict_no_fetch)
-        {
-            if (!params.tick_size.has_value() || params.tick_size->empty())
-            {
-                finish_with_error("strict_no_fetch requires tick_size");
-                return;
-            }
-            if (!params.price.has_value() || *params.price <= 0.0)
-            {
-                finish_with_error("strict_no_fetch requires price");
-                return;
-            }
-            if (!params.neg_risk.has_value())
-            {
-                finish_with_error("strict_no_fetch requires neg_risk");
-                return;
-            }
-            if (!params.fee_rate_bps_provided || params.fee_rate_bps.empty())
-            {
-                finish_with_error("strict_no_fetch requires fee_rate_bps");
-                return;
-            }
-
-            state->tick_size = *params.tick_size;
-            state->price = *params.price;
-            state->neg_risk = params.neg_risk.value();
-
-            if (!price_valid(state->price, state->tick_size))
-            {
-                finish_with_error("invalid price (" + std::to_string(state->price) +
-                                  "), min: " + state->tick_size +
-                                  " - max: " + std::to_string(1.0 - std::stod(state->tick_size)));
-                return;
-            }
-
-            (*submit_order)();
-            return;
-        }
-
         *resolve_price = [this, state, finish_with_error, resolve_neg_risk]()
         {
             if (state->params.price.has_value() && state->params.price.value() > 0.0)
@@ -1641,6 +1602,45 @@ namespace polymarket
                                  }
                              });
         };
+
+        if (params.strict_no_fetch)
+        {
+            if (!params.tick_size.has_value() || params.tick_size->empty())
+            {
+                finish_with_error("strict_no_fetch requires tick_size");
+                return;
+            }
+            if (!params.price.has_value() || *params.price <= 0.0)
+            {
+                finish_with_error("strict_no_fetch requires price");
+                return;
+            }
+            if (!params.neg_risk.has_value())
+            {
+                finish_with_error("strict_no_fetch requires neg_risk");
+                return;
+            }
+            if (!params.fee_rate_bps_provided || params.fee_rate_bps.empty())
+            {
+                finish_with_error("strict_no_fetch requires fee_rate_bps");
+                return;
+            }
+
+            state->tick_size = *params.tick_size;
+            state->price = *params.price;
+            state->neg_risk = params.neg_risk.value();
+
+            if (!price_valid(state->price, state->tick_size))
+            {
+                finish_with_error("invalid price (" + std::to_string(state->price) +
+                                  "), min: " + state->tick_size +
+                                  " - max: " + std::to_string(1.0 - std::stod(state->tick_size)));
+                return;
+            }
+
+            (*submit_order)();
+            return;
+        }
 
         if (state->params.tick_size.has_value() && !state->params.tick_size->empty())
         {
