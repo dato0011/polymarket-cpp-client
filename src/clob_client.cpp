@@ -1248,7 +1248,7 @@ namespace polymarket
 
     void ClobClient::create_and_post_market_order_v2_async(
         const CreateMarketOrderParams &params,
-        std::function<void(OrderResponse)> callback)
+        std::function<void(const OrderResponse &)> callback)
     {
         if (!api_creds_ || !order_signer_)
         {
@@ -1265,7 +1265,7 @@ namespace polymarket
         struct AsyncMarketOrderState
         {
             CreateMarketOrderParams params;
-            std::function<void(OrderResponse)> callback;
+            std::function<void(const OrderResponse &)> callback;
             bool done = false;
             std::string tick_size;
             double price = 0.0;

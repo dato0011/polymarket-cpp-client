@@ -257,7 +257,7 @@ namespace polymarket
         OrderResponse create_and_post_market_order_v2(const CreateMarketOrderParams &params);
         void create_and_post_market_order_v2_async(
             const CreateMarketOrderParams &params,
-            std::function<void(OrderResponse)> callback);
+            std::function<void(const OrderResponse &)> callback);
 
         // Order management
         bool cancel_order(const std::string &order_id);
