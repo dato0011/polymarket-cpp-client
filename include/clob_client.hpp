@@ -134,11 +134,13 @@ namespace polymarket
         std::optional<double> price; // Optional price limit
         OrderType order_type = OrderType::FOK;
         std::string fee_rate_bps = "0";
+        bool fee_rate_bps_provided = false; // If true, uses fee_rate_bps without fetching
         std::string expiration = "0";
         std::string nonce = "0";
         std::string taker = "0x0000000000000000000000000000000000000000";
         std::optional<std::string> tick_size; // Optional tick size override (e.g. "0.01")
         std::optional<bool> neg_risk;         // If set, skips API call to fetch neg_risk
+        bool strict_no_fetch = false;         // If true, requires price/tick_size/neg_risk/fee_rate_bps
     };
 
     // Batch order entry

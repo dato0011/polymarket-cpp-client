@@ -986,31 +986,76 @@ namespace polymarket
             throw std::runtime_error("Client not authenticated");
         }
 
-        std::string min_tick_size = "0.01";
-        // if (auto tick_info = get_tick_size(params.token_id))
-        // {
-        //     min_tick_size = tick_info->minimum_tick_size;
-        // }
-
-        std::string tick_size = min_tick_size;
-        if (params.tick_size.has_value() && !params.tick_size->empty())
-        {
-            if (is_tick_size_smaller(*params.tick_size, min_tick_size))
-            {
-                throw std::runtime_error("invalid tick size (" + *params.tick_size +
-                                         "), minimum for the market is " + min_tick_size);
-            }
-            tick_size = *params.tick_size;
-        }
-
+        std::string tick_size;
         double price = 0.0;
-        if (params.price.has_value() && *params.price > 0.0)
+        bool is_neg_risk = false;
+        int market_fee_rate_bps = 0;
+
+        if (params.strict_no_fetch)
         {
+            if (!params.tick_size.has_value() || params.tick_size->empty())
+            {
+                throw std::runtime_error("strict_no_fetch requires tick_size");
+            }
+            if (!params.price.has_value() || *params.price <= 0.0)
+            {
+                throw std::runtime_error("strict_no_fetch requires price");
+            }
+            if (!params.neg_risk.has_value())
+            {
+                throw std::runtime_error("strict_no_fetch requires neg_risk");
+            }
+            if (!params.fee_rate_bps_provided || params.fee_rate_bps.empty())
+            {
+                throw std::runtime_error("strict_no_fetch requires fee_rate_bps");
+            }
+
+            tick_size = *params.tick_size;
             price = *params.price;
+            is_neg_risk = params.neg_risk.value();
         }
         else
         {
-            price = calculate_market_price(params.token_id, params.side, params.amount, params.order_type);
+            std::string min_tick_size = "0.01";
+            // if (auto tick_info = get_tick_size(params.token_id))
+            // {
+            //     min_tick_size = tick_info->minimum_tick_size;
+            // }
+
+            tick_size = min_tick_size;
+            if (params.tick_size.has_value() && !params.tick_size->empty())
+            {
+                if (is_tick_size_smaller(*params.tick_size, min_tick_size))
+                {
+                    throw std::runtime_error("invalid tick size (" + *params.tick_size +
+                                             "), minimum for the market is " + min_tick_size);
+                }
+                tick_size = *params.tick_size;
+            }
+
+            if (params.price.has_value() && *params.price > 0.0)
+            {
+                price = *params.price;
+            }
+            else
+            {
+                price = calculate_market_price(params.token_id, params.side, params.amount, params.order_type);
+            }
+
+            if (params.neg_risk.has_value())
+            {
+                is_neg_risk = params.neg_risk.value();
+            }
+            else
+            {
+                auto neg_risk_info = get_neg_risk(params.token_id);
+                is_neg_risk = neg_risk_info && neg_risk_info->neg_risk;
+            }
+
+            if (!params.fee_rate_bps_provided)
+            {
+                market_fee_rate_bps = 1000; // TODO
+            }
         }
 
         if (!price_valid(price, tick_size))
@@ -1018,23 +1063,6 @@ namespace polymarket
             throw std::runtime_error("invalid price (" + std::to_string(price) + "), min: " + tick_size +
                                      " - max: " + std::to_string(1.0 - std::stod(tick_size)));
         }
-
-        bool is_neg_risk = false;
-        if (params.neg_risk.has_value())
-        {
-            is_neg_risk = params.neg_risk.value();
-        }
-        else
-        {
-            auto neg_risk_info = get_neg_risk(params.token_id);
-            is_neg_risk = neg_risk_info && neg_risk_info->neg_risk;
-        }
-
-        constexpr int market_fee_rate_bps = 1000; // TODO
-        // if (auto fee_rate = get_fee_rate_bps(params.token_id))
-        // {
-        //     market_fee_rate_bps = *fee_rate;
-        // }
 
         std::string exchange_addr = is_neg_risk ? NEG_RISK_EXCHANGE_ADDRESS : EXCHANGE_ADDRESS;
         RoundConfig round_config = get_round_config(tick_size);
@@ -1079,7 +1107,11 @@ namespace polymarket
         order_data.taker_amount = to_wei(raw_taker_amt, 6);
         order_data.side = params.side;
         std::string fee_rate_bps = params.fee_rate_bps.empty() ? "0" : params.fee_rate_bps;
-        if (market_fee_rate_bps > 0)
+        if (params.fee_rate_bps_provided)
+        {
+            // Caller-provided fee rate; skip lookup/validation.
+        }
+        else if (market_fee_rate_bps > 0)
         {
             if (fee_rate_bps != "0")
             {
@@ -1271,11 +1303,13 @@ namespace polymarket
             double price = 0.0;
             bool neg_risk = false;
             int fee_rate_bps = 0;
+            bool fee_rate_provided = false;
         };
 
         auto state = std::make_shared<AsyncMarketOrderState>();
         state->params = params;
         state->callback = std::move(callback);
+        state->fee_rate_provided = params.fee_rate_bps_provided;
 
         auto finish_with_error = [state](const std::string &message)
         {
@@ -1297,6 +1331,45 @@ namespace polymarket
         auto resolve_neg_risk = std::make_shared<std::function<void()>>();
         auto resolve_fee_rate = std::make_shared<std::function<void()>>();
         auto submit_order = std::make_shared<std::function<void()>>();
+
+        if (params.strict_no_fetch)
+        {
+            if (!params.tick_size.has_value() || params.tick_size->empty())
+            {
+                finish_with_error("strict_no_fetch requires tick_size");
+                return;
+            }
+            if (!params.price.has_value() || *params.price <= 0.0)
+            {
+                finish_with_error("strict_no_fetch requires price");
+                return;
+            }
+            if (!params.neg_risk.has_value())
+            {
+                finish_with_error("strict_no_fetch requires neg_risk");
+                return;
+            }
+            if (!params.fee_rate_bps_provided || params.fee_rate_bps.empty())
+            {
+                finish_with_error("strict_no_fetch requires fee_rate_bps");
+                return;
+            }
+
+            state->tick_size = *params.tick_size;
+            state->price = *params.price;
+            state->neg_risk = params.neg_risk.value();
+
+            if (!price_valid(state->price, state->tick_size))
+            {
+                finish_with_error("invalid price (" + std::to_string(state->price) +
+                                  "), min: " + state->tick_size +
+                                  " - max: " + std::to_string(1.0 - std::stod(state->tick_size)));
+                return;
+            }
+
+            (*submit_order)();
+            return;
+        }
 
         *resolve_price = [this, state, finish_with_error, resolve_neg_risk]()
         {
@@ -1398,6 +1471,11 @@ namespace polymarket
 
         *resolve_fee_rate = [this, state, finish_with_error, submit_order]()
         {
+            if (state->fee_rate_provided)
+            {
+                (*submit_order)();
+                return;
+            }
             std::string path = "/fee-rate?token_id=" + state->params.token_id;
             http_.get_async(path,
                             [state, finish_with_error, submit_order](const HttpResponse &http_response) mutable
@@ -1426,7 +1504,7 @@ namespace polymarket
         *submit_order = [this, state, finish_with_error]()
         {
             std::string fee_rate_bps = state->params.fee_rate_bps.empty() ? "0" : state->params.fee_rate_bps;
-            if (state->fee_rate_bps > 0)
+            if (!state->fee_rate_provided && state->fee_rate_bps > 0)
             {
                 if (fee_rate_bps != "0")
                 {
@@ -1564,6 +1642,13 @@ namespace polymarket
                              });
         };
 
+        if (state->params.tick_size.has_value() && !state->params.tick_size->empty())
+        {
+            state->tick_size = *state->params.tick_size;
+            (*resolve_price)();
+            return;
+        }
+
         std::string tick_path = "/tick-size?token_id=" + state->params.token_id;
         http_.get_async(tick_path,
                         [state, finish_with_error, resolve_price](const HttpResponse &http_response) mutable
@@ -1599,18 +1684,7 @@ namespace polymarket
                                 return;
                             }
 
-                            std::string tick_size = min_tick_size;
-                            if (state->params.tick_size.has_value() && !state->params.tick_size->empty())
-                            {
-                                if (is_tick_size_smaller(*state->params.tick_size, min_tick_size))
-                                {
-                                    finish_with_error("invalid tick size (" + *state->params.tick_size +
-                                                      "), minimum for the market is " + min_tick_size);
-                                    return;
-                                }
-                                tick_size = *state->params.tick_size;
-                            }
-                            state->tick_size = tick_size;
+                            state->tick_size = min_tick_size;
                             (*resolve_price)();
                         });
     }
