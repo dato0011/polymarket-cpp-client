@@ -8,6 +8,7 @@
 #include <optional>
 #include <map>
 #include <memory>
+#include <functional>
 
 namespace polymarket
 {
@@ -254,6 +255,9 @@ namespace polymarket
         OrderResponse create_and_post_market_order(const CreateMarketOrderParams &params,
                                                    OrderType order_type = OrderType::FAK);
         OrderResponse create_and_post_market_order_v2(const CreateMarketOrderParams &params);
+        void create_and_post_market_order_v2_async(
+            const CreateMarketOrderParams &params,
+            std::function<void(OrderResponse)> callback);
 
         // Order management
         bool cancel_order(const std::string &order_id);
@@ -266,8 +270,15 @@ namespace polymarket
         std::vector<OpenOrder> get_open_orders(const std::string &market = "");
         std::vector<Trade> get_trades(const std::string &next_cursor = "");
 
+        // Async helpers (drive HttpClient async requests)
+        void poll_async(long timeout_ms = 0);
+        size_t pending_async() const;
+
         // Balance and allowance
         std::optional<BalanceAllowance> get_balance_allowance(const std::string &asset_type = "USDC");
+        void get_balance_allowance_async(
+            const std::string &asset_type,
+            std::function<void(std::optional<BalanceAllowance>)> callback);
         bool update_balance_allowance(const std::string &asset_type = "USDC");
 
         // Order scoring

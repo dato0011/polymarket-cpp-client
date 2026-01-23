@@ -1,7 +1,10 @@
 #include "http_client.hpp"
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace polymarket
 {
@@ -28,9 +31,10 @@ namespace polymarket
     }
 
     HttpClient::HttpClient()
-        : curl_(nullptr), headers_(nullptr), timeout_ms_(5000),
+        : curl_(nullptr), multi_(nullptr), headers_(nullptr), timeout_ms_(5000),
           dns_cache_timeout_(60), keepalive_interval_(20),
           heartbeat_running_(false),
+          async_running_(false),
           total_requests_(0), reused_connections_(0),
           total_latency_ms_(0.0), last_latency_ms_(0.0),
           connection_warm_(false)
@@ -41,20 +45,26 @@ namespace polymarket
     HttpClient::~HttpClient()
     {
         stop_heartbeat();
+        stop_async_worker();
         cleanup();
     }
 
     HttpClient::HttpClient(HttpClient &&other) noexcept
-        : curl_(other.curl_), headers_(other.headers_), base_url_(std::move(other.base_url_)),
-          proxy_url_(std::move(other.proxy_url_)), timeout_ms_(other.timeout_ms_),
+        : curl_(other.curl_), multi_(other.multi_), headers_(other.headers_),
+          base_url_(std::move(other.base_url_)),
+          proxy_url_(std::move(other.proxy_url_)), user_agent_(std::move(other.user_agent_)),
+          timeout_ms_(other.timeout_ms_),
           dns_cache_timeout_(other.dns_cache_timeout_), keepalive_interval_(other.keepalive_interval_),
           heartbeat_running_(false),
           total_requests_(other.total_requests_), reused_connections_(other.reused_connections_),
           total_latency_ms_(other.total_latency_ms_), last_latency_ms_(other.last_latency_ms_),
-          connection_warm_(other.connection_warm_)
+          connection_warm_(other.connection_warm_),
+          pending_async_requests_(std::move(other.pending_async_requests_))
     {
         other.stop_heartbeat();
+        other.stop_async_worker();
         other.curl_ = nullptr;
+        other.multi_ = nullptr;
         other.headers_ = nullptr;
     }
 
@@ -64,11 +74,15 @@ namespace polymarket
         {
             stop_heartbeat();
             other.stop_heartbeat();
+            stop_async_worker();
+            other.stop_async_worker();
             cleanup();
             curl_ = other.curl_;
+            multi_ = other.multi_;
             headers_ = other.headers_;
             base_url_ = std::move(other.base_url_);
             proxy_url_ = std::move(other.proxy_url_);
+            user_agent_ = std::move(other.user_agent_);
             timeout_ms_ = other.timeout_ms_;
             dns_cache_timeout_ = other.dns_cache_timeout_;
             keepalive_interval_ = other.keepalive_interval_;
@@ -77,7 +91,9 @@ namespace polymarket
             total_latency_ms_ = other.total_latency_ms_;
             last_latency_ms_ = other.last_latency_ms_;
             connection_warm_ = other.connection_warm_;
+            pending_async_requests_ = std::move(other.pending_async_requests_);
             other.curl_ = nullptr;
+            other.multi_ = nullptr;
             other.headers_ = nullptr;
         }
         return *this;
@@ -90,35 +106,46 @@ namespace polymarket
         {
             throw std::runtime_error("Failed to initialize CURL");
         }
+        multi_ = curl_multi_init();
+        if (!multi_)
+        {
+            curl_easy_cleanup(curl_);
+            curl_ = nullptr;
+            throw std::runtime_error("Failed to initialize CURL multi");
+        }
 
         // Set default options for performance
-        curl_easy_setopt(curl_, CURLOPT_TCP_NODELAY, 1L);    // Disable Nagle's algorithm
-        curl_easy_setopt(curl_, CURLOPT_TCP_KEEPALIVE, 1L);  // Enable TCP keepalive
-        curl_easy_setopt(curl_, CURLOPT_TCP_KEEPIDLE, 20L);  // Start keepalive after 20s idle
-        curl_easy_setopt(curl_, CURLOPT_TCP_KEEPINTVL, 20L); // Keepalive probe interval
-        curl_easy_setopt(curl_, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl_, CURLOPT_MAXREDIRS, 3L);
-        curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, write_callback);
-
-        // Connection reuse - critical for keeping TCP/TLS hot
-        curl_easy_setopt(curl_, CURLOPT_FORBID_REUSE, 0L);                      // Allow connection reuse
-        curl_easy_setopt(curl_, CURLOPT_FRESH_CONNECT, 0L);                     // Reuse existing connections
-        curl_easy_setopt(curl_, CURLOPT_DNS_CACHE_TIMEOUT, dns_cache_timeout_); // DNS cache TTL
-
-        // HTTP/1.1 keep-alive
-        add_header("Connection: keep-alive");
-
-        // SSL options
-        curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYPEER, 1L);
-        curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYHOST, 2L);
+        apply_common_options(curl_);
 
         // Default headers
+        add_header("Connection: keep-alive");
         add_header("Accept: application/json");
         add_header("Content-Type: application/json");
     }
 
     void HttpClient::cleanup()
     {
+        for (auto &entry : pending_async_requests_)
+        {
+            if (multi_ && entry.first)
+            {
+                curl_multi_remove_handle(multi_, entry.first);
+            }
+            if (entry.second && entry.second->headers)
+            {
+                curl_slist_free_all(entry.second->headers);
+            }
+            if (entry.first)
+            {
+                curl_easy_cleanup(entry.first);
+            }
+        }
+        pending_async_requests_.clear();
+        if (multi_)
+        {
+            curl_multi_cleanup(multi_);
+            multi_ = nullptr;
+        }
         if (headers_)
         {
             curl_slist_free_all(headers_);
@@ -185,6 +212,7 @@ namespace polymarket
 
     void HttpClient::set_user_agent(const std::string &user_agent)
     {
+        user_agent_ = user_agent;
         if (curl_)
         {
             curl_easy_setopt(curl_, CURLOPT_USERAGENT, user_agent.c_str());
@@ -198,6 +226,87 @@ namespace polymarket
         {
             curl_easy_setopt(curl_, CURLOPT_DNS_CACHE_TIMEOUT, seconds);
         }
+    }
+
+    void HttpClient::apply_common_options(CURL *handle)
+    {
+        curl_easy_setopt(handle, CURLOPT_TCP_NODELAY, 1L);
+        curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
+        curl_easy_setopt(handle, CURLOPT_TCP_KEEPIDLE, keepalive_interval_);
+        curl_easy_setopt(handle, CURLOPT_TCP_KEEPINTVL, keepalive_interval_);
+        curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 3L);
+        curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
+
+        curl_easy_setopt(handle, CURLOPT_FORBID_REUSE, 0L);
+        curl_easy_setopt(handle, CURLOPT_FRESH_CONNECT, 0L);
+        curl_easy_setopt(handle, CURLOPT_DNS_CACHE_TIMEOUT, dns_cache_timeout_);
+
+        curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 2L);
+
+        if (!user_agent_.empty())
+        {
+            curl_easy_setopt(handle, CURLOPT_USERAGENT, user_agent_.c_str());
+        }
+
+        if (!proxy_url_.empty())
+        {
+            curl_easy_setopt(handle, CURLOPT_PROXY, proxy_url_.c_str());
+            if (proxy_url_.find("socks5://") == 0 || proxy_url_.find("socks5h://") == 0)
+            {
+                curl_easy_setopt(handle, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
+            }
+            else if (proxy_url_.find("socks4://") == 0)
+            {
+                curl_easy_setopt(handle, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS4);
+            }
+            else
+            {
+                curl_easy_setopt(handle, CURLOPT_HTTPPROXYTUNNEL, 1L);
+                curl_easy_setopt(handle, CURLOPT_PROXYTYPE, CURLPROXY_HTTP);
+            }
+
+            curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 0L);
+            curl_easy_setopt(handle, CURLOPT_PROXY_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(handle, CURLOPT_PROXY_SSL_VERIFYHOST, 0L);
+        }
+    }
+
+    curl_slist *HttpClient::build_headers(const std::map<std::string, std::string> *custom_headers) const
+    {
+        curl_slist *temp_headers = nullptr;
+        for (auto h = headers_; h; h = h->next)
+        {
+            temp_headers = curl_slist_append(temp_headers, h->data);
+        }
+        if (custom_headers)
+        {
+            for (const auto &[key, value] : *custom_headers)
+            {
+                std::string header = key + ": " + value;
+                temp_headers = curl_slist_append(temp_headers, header.c_str());
+            }
+        }
+        return temp_headers;
+    }
+
+    void HttpClient::enqueue_async_request(std::unique_ptr<AsyncRequest> request)
+    {
+        if (!multi_)
+        {
+            throw std::runtime_error("CURL multi not initialized");
+        }
+        CURL *easy = request->easy;
+        curl_easy_setopt(easy, CURLOPT_PRIVATE, request.get());
+        {
+            std::lock_guard<std::mutex> lock(async_mutex_);
+            curl_multi_add_handle(multi_, easy);
+            pending_async_requests_[easy] = std::move(request);
+        }
+        ensure_async_worker();
+        async_cv_.notify_one();
     }
 
     void HttpClient::set_keepalive_interval(long seconds)
@@ -381,6 +490,268 @@ namespace polymarket
         headers_ = original_headers;
 
         return response;
+    }
+
+    void HttpClient::get_async(const std::string &path, AsyncCallback callback)
+    {
+        std::string url = base_url_.empty() ? path : base_url_ + path;
+
+        auto request = std::make_unique<AsyncRequest>();
+        request->easy = curl_easy_init();
+        if (!request->easy)
+        {
+            if (callback)
+            {
+                HttpResponse response;
+                response.status_code = 0;
+                response.error = "Failed to initialize CURL handle";
+                callback(response);
+            }
+            return;
+        }
+        request->url = url;
+        request->callback = std::move(callback);
+        request->start = std::chrono::high_resolution_clock::now();
+        request->headers = build_headers(nullptr);
+
+        apply_common_options(request->easy);
+        curl_easy_setopt(request->easy, CURLOPT_URL, request->url.c_str());
+        curl_easy_setopt(request->easy, CURLOPT_HTTPHEADER, request->headers);
+        curl_easy_setopt(request->easy, CURLOPT_TIMEOUT_MS, timeout_ms_);
+        curl_easy_setopt(request->easy, CURLOPT_HTTPGET, 1L);
+        curl_easy_setopt(request->easy, CURLOPT_POST, 0L);
+        curl_easy_setopt(request->easy, CURLOPT_WRITEDATA, &request->response_body);
+
+        enqueue_async_request(std::move(request));
+    }
+
+    void HttpClient::get_async(const std::string &path, const std::map<std::string, std::string> &custom_headers,
+                               AsyncCallback callback)
+    {
+        std::string url = base_url_.empty() ? path : base_url_ + path;
+
+        auto request = std::make_unique<AsyncRequest>();
+        request->easy = curl_easy_init();
+        if (!request->easy)
+        {
+            if (callback)
+            {
+                HttpResponse response;
+                response.status_code = 0;
+                response.error = "Failed to initialize CURL handle";
+                callback(response);
+            }
+            return;
+        }
+        request->url = url;
+        request->callback = std::move(callback);
+        request->start = std::chrono::high_resolution_clock::now();
+        request->headers = build_headers(&custom_headers);
+
+        apply_common_options(request->easy);
+        curl_easy_setopt(request->easy, CURLOPT_URL, request->url.c_str());
+        curl_easy_setopt(request->easy, CURLOPT_HTTPHEADER, request->headers);
+        curl_easy_setopt(request->easy, CURLOPT_TIMEOUT_MS, timeout_ms_);
+        curl_easy_setopt(request->easy, CURLOPT_HTTPGET, 1L);
+        curl_easy_setopt(request->easy, CURLOPT_POST, 0L);
+        curl_easy_setopt(request->easy, CURLOPT_WRITEDATA, &request->response_body);
+
+        enqueue_async_request(std::move(request));
+    }
+
+    void HttpClient::post_async(const std::string &path, const std::string &body, AsyncCallback callback)
+    {
+        std::string url = base_url_.empty() ? path : base_url_ + path;
+
+        auto request = std::make_unique<AsyncRequest>();
+        request->easy = curl_easy_init();
+        if (!request->easy)
+        {
+            if (callback)
+            {
+                HttpResponse response;
+                response.status_code = 0;
+                response.error = "Failed to initialize CURL handle";
+                callback(response);
+            }
+            return;
+        }
+        request->url = url;
+        request->request_body = body;
+        request->callback = std::move(callback);
+        request->start = std::chrono::high_resolution_clock::now();
+        request->headers = build_headers(nullptr);
+
+        apply_common_options(request->easy);
+        curl_easy_setopt(request->easy, CURLOPT_URL, request->url.c_str());
+        curl_easy_setopt(request->easy, CURLOPT_HTTPHEADER, request->headers);
+        curl_easy_setopt(request->easy, CURLOPT_TIMEOUT_MS, timeout_ms_);
+        curl_easy_setopt(request->easy, CURLOPT_POST, 1L);
+        curl_easy_setopt(request->easy, CURLOPT_POSTFIELDS, request->request_body.c_str());
+        curl_easy_setopt(request->easy, CURLOPT_POSTFIELDSIZE, static_cast<long>(request->request_body.size()));
+        curl_easy_setopt(request->easy, CURLOPT_WRITEDATA, &request->response_body);
+
+        enqueue_async_request(std::move(request));
+    }
+
+    void HttpClient::post_async(const std::string &path, const std::string &body,
+                                const std::map<std::string, std::string> &custom_headers,
+                                AsyncCallback callback)
+    {
+        std::string url = base_url_.empty() ? path : base_url_ + path;
+
+        auto request = std::make_unique<AsyncRequest>();
+        request->easy = curl_easy_init();
+        if (!request->easy)
+        {
+            if (callback)
+            {
+                HttpResponse response;
+                response.status_code = 0;
+                response.error = "Failed to initialize CURL handle";
+                callback(response);
+            }
+            return;
+        }
+        request->url = url;
+        request->request_body = body;
+        request->callback = std::move(callback);
+        request->start = std::chrono::high_resolution_clock::now();
+        request->headers = build_headers(&custom_headers);
+
+        apply_common_options(request->easy);
+        curl_easy_setopt(request->easy, CURLOPT_URL, request->url.c_str());
+        curl_easy_setopt(request->easy, CURLOPT_HTTPHEADER, request->headers);
+        curl_easy_setopt(request->easy, CURLOPT_TIMEOUT_MS, timeout_ms_);
+        curl_easy_setopt(request->easy, CURLOPT_POST, 1L);
+        curl_easy_setopt(request->easy, CURLOPT_POSTFIELDS, request->request_body.c_str());
+        curl_easy_setopt(request->easy, CURLOPT_POSTFIELDSIZE, static_cast<long>(request->request_body.size()));
+        curl_easy_setopt(request->easy, CURLOPT_WRITEDATA, &request->response_body);
+
+        enqueue_async_request(std::move(request));
+    }
+
+    void HttpClient::poll_async(long timeout_ms)
+    {
+        if (!multi_)
+        {
+            return;
+        }
+
+        std::vector<std::pair<AsyncCallback, HttpResponse>> completed;
+
+        int numfds = 0;
+        {
+            std::lock_guard<std::mutex> lock(async_mutex_);
+            curl_multi_poll(multi_, nullptr, 0, timeout_ms, &numfds);
+
+            int still_running = 0;
+            curl_multi_perform(multi_, &still_running);
+
+            int msgs_in_queue = 0;
+            while (CURLMsg *msg = curl_multi_info_read(multi_, &msgs_in_queue))
+            {
+                if (msg->msg != CURLMSG_DONE)
+                {
+                    continue;
+                }
+
+                CURL *easy = msg->easy_handle;
+                auto it = pending_async_requests_.find(easy);
+                if (it == pending_async_requests_.end())
+                {
+                    curl_multi_remove_handle(multi_, easy);
+                    curl_easy_cleanup(easy);
+                    continue;
+                }
+
+                AsyncRequest *request = it->second.get();
+                HttpResponse response;
+                response.status_code = 0;
+                response.body = request->response_body;
+
+                auto end = std::chrono::high_resolution_clock::now();
+                response.elapsed_ms = std::chrono::duration<double, std::milli>(end - request->start).count();
+
+                if (msg->data.result != CURLE_OK)
+                {
+                    response.error = curl_easy_strerror(msg->data.result);
+                }
+                else
+                {
+                    curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &response.status_code);
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(stats_mutex_);
+                    total_requests_++;
+                    total_latency_ms_ += response.elapsed_ms;
+                    last_latency_ms_ = response.elapsed_ms;
+
+                    long reused = 0;
+                    curl_easy_getinfo(easy, CURLINFO_NUM_CONNECTS, &reused);
+                    if (reused == 0)
+                    {
+                        reused_connections_++;
+                    }
+                }
+
+                completed.emplace_back(request->callback, std::move(response));
+
+                curl_multi_remove_handle(multi_, easy);
+                if (request->headers)
+                {
+                    curl_slist_free_all(request->headers);
+                }
+                curl_easy_cleanup(easy);
+                pending_async_requests_.erase(it);
+            }
+        }
+
+        for (auto &entry : completed)
+        {
+            if (entry.first)
+            {
+                entry.first(entry.second);
+            }
+        }
+    }
+
+    size_t HttpClient::pending_async() const
+    {
+        std::lock_guard<std::mutex> lock(async_mutex_);
+        return pending_async_requests_.size();
+    }
+
+    void HttpClient::ensure_async_worker()
+    {
+        bool expected = false;
+        if (!async_running_.compare_exchange_strong(expected, true))
+        {
+            return;
+        }
+
+        async_thread_ = std::thread([this]()
+                                    {
+            while (async_running_.load())
+            {
+                if (pending_async() == 0)
+                {
+                    std::unique_lock<std::mutex> lock(async_mutex_);
+                    async_cv_.wait_for(lock, std::chrono::milliseconds(1));
+                }
+                poll_async(1);
+            } });
+    }
+
+    void HttpClient::stop_async_worker()
+    {
+        async_running_.store(false);
+        async_cv_.notify_all();
+        if (async_thread_.joinable())
+        {
+            async_thread_.join();
+        }
     }
 
     // ============================================================

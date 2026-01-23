@@ -1246,6 +1246,358 @@ namespace polymarket
         return post_order(signed_order, params.order_type);
     }
 
+    void ClobClient::create_and_post_market_order_v2_async(
+        const CreateMarketOrderParams &params,
+        std::function<void(OrderResponse)> callback)
+    {
+        if (!api_creds_ || !order_signer_)
+        {
+            OrderResponse response;
+            response.success = false;
+            response.error_msg = "Client not authenticated";
+            if (callback)
+            {
+                callback(response);
+            }
+            return;
+        }
+
+        struct AsyncMarketOrderState
+        {
+            CreateMarketOrderParams params;
+            std::function<void(OrderResponse)> callback;
+            bool done = false;
+            std::string tick_size;
+            double price = 0.0;
+            bool neg_risk = false;
+            int fee_rate_bps = 0;
+        };
+
+        auto state = std::make_shared<AsyncMarketOrderState>();
+        state->params = params;
+        state->callback = std::move(callback);
+
+        auto finish_with_error = [state](const std::string &message)
+        {
+            if (state->done)
+            {
+                return;
+            }
+            state->done = true;
+            OrderResponse response;
+            response.success = false;
+            response.error_msg = message;
+            if (state->callback)
+            {
+                state->callback(response);
+            }
+        };
+
+        auto resolve_price = std::make_shared<std::function<void()>>();
+        auto resolve_neg_risk = std::make_shared<std::function<void()>>();
+        auto resolve_fee_rate = std::make_shared<std::function<void()>>();
+        auto submit_order = std::make_shared<std::function<void()>>();
+
+        *resolve_price = [this, state, finish_with_error, resolve_neg_risk]()
+        {
+            if (state->params.price.has_value() && state->params.price.value() > 0.0)
+            {
+                state->price = state->params.price.value();
+                if (!price_valid(state->price, state->tick_size))
+                {
+                    finish_with_error("invalid price (" + std::to_string(state->price) +
+                                      "), min: " + state->tick_size +
+                                      " - max: " + std::to_string(1.0 - std::stod(state->tick_size)));
+                    return;
+                }
+                (*resolve_neg_risk)();
+                return;
+            }
+
+            std::string path = "/book?token_id=" + state->params.token_id;
+            http_.get_async(path,
+                            [this, state, finish_with_error, resolve_neg_risk](const HttpResponse &http_response) mutable
+                            {
+                                if (!http_response.ok())
+                                {
+                                    finish_with_error("no orderbook");
+                                    return;
+                                }
+
+                                auto book = parse_orderbook(http_response.body);
+                                if (!book)
+                                {
+                                    finish_with_error("no orderbook");
+                                    return;
+                                }
+
+                                try
+                                {
+                                    if (state->params.side == OrderSide::BUY)
+                                    {
+                                        state->price = calculate_buy_market_price(
+                                            book->asks, state->params.amount, state->params.order_type);
+                                    }
+                                    else
+                                    {
+                                        state->price = calculate_sell_market_price(
+                                            book->bids, state->params.amount, state->params.order_type);
+                                    }
+                                }
+                                catch (const std::exception &e)
+                                {
+                                    finish_with_error(e.what());
+                                    return;
+                                }
+
+                                if (!price_valid(state->price, state->tick_size))
+                                {
+                                    finish_with_error("invalid price (" + std::to_string(state->price) +
+                                                      "), min: " + state->tick_size +
+                                                      " - max: " + std::to_string(1.0 - std::stod(state->tick_size)));
+                                    return;
+                                }
+
+                                (*resolve_neg_risk)();
+                            });
+        };
+
+        *resolve_neg_risk = [this, state, finish_with_error, resolve_fee_rate]()
+        {
+            if (state->params.neg_risk.has_value())
+            {
+                state->neg_risk = state->params.neg_risk.value();
+                (*resolve_fee_rate)();
+                return;
+            }
+
+            std::string path = "/neg-risk?token_id=" + state->params.token_id;
+            http_.get_async(path,
+                            [state, finish_with_error, resolve_fee_rate](const HttpResponse &http_response) mutable
+                            {
+                                if (!http_response.ok())
+                                {
+                                    finish_with_error("failed to fetch neg risk");
+                                    return;
+                                }
+
+                                try
+                                {
+                                    auto j = json::parse(http_response.body);
+                                    state->neg_risk = j.value("neg_risk", false);
+                                }
+                                catch (...)
+                                {
+                                    finish_with_error("failed to parse neg risk");
+                                    return;
+                                }
+
+                                (*resolve_fee_rate)();
+                            });
+        };
+
+        *resolve_fee_rate = [this, state, finish_with_error, submit_order]()
+        {
+            std::string path = "/fee-rate?token_id=" + state->params.token_id;
+            http_.get_async(path,
+                            [state, finish_with_error, submit_order](const HttpResponse &http_response) mutable
+                            {
+                                if (!http_response.ok())
+                                {
+                                    finish_with_error("failed to fetch fee rate");
+                                    return;
+                                }
+
+                                try
+                                {
+                                    auto j = json::parse(http_response.body);
+                                    state->fee_rate_bps = j.value("base_fee", 0);
+                                }
+                                catch (...)
+                                {
+                                    finish_with_error("failed to parse fee rate");
+                                    return;
+                                }
+
+                                (*submit_order)();
+                            });
+        };
+
+        *submit_order = [this, state, finish_with_error]()
+        {
+            std::string fee_rate_bps = state->params.fee_rate_bps.empty() ? "0" : state->params.fee_rate_bps;
+            if (state->fee_rate_bps > 0)
+            {
+                if (fee_rate_bps != "0")
+                {
+                    int provided_fee = 0;
+                    try
+                    {
+                        provided_fee = std::stoi(fee_rate_bps);
+                    }
+                    catch (...)
+                    {
+                        finish_with_error("invalid fee rate (" + fee_rate_bps + ")");
+                        return;
+                    }
+                    if (provided_fee != state->fee_rate_bps)
+                    {
+                        finish_with_error("invalid fee rate (" + fee_rate_bps +
+                                          "), current market's taker fee: " +
+                                          std::to_string(state->fee_rate_bps));
+                        return;
+                    }
+                }
+                fee_rate_bps = std::to_string(state->fee_rate_bps);
+            }
+
+            std::string exchange_addr = state->neg_risk ? NEG_RISK_EXCHANGE_ADDRESS : EXCHANGE_ADDRESS;
+            RoundConfig round_config = get_round_config(state->tick_size);
+            double raw_price = round_normal(state->price, round_config.price);
+
+            double raw_maker_amt = round_down(state->params.amount, round_config.size);
+            double raw_taker_amt = 0.0;
+            if (state->params.side == OrderSide::BUY)
+            {
+                raw_taker_amt = raw_maker_amt / raw_price;
+                if (decimal_places(raw_taker_amt) > round_config.amount)
+                {
+                    raw_taker_amt = round_up(raw_taker_amt, round_config.amount + 4);
+                    if (decimal_places(raw_taker_amt) > round_config.amount)
+                    {
+                        raw_taker_amt = round_down(raw_taker_amt, round_config.amount);
+                    }
+                }
+            }
+            else
+            {
+                raw_taker_amt = raw_maker_amt * raw_price;
+                if (decimal_places(raw_taker_amt) > round_config.amount)
+                {
+                    raw_taker_amt = round_up(raw_taker_amt, round_config.amount + 4);
+                    if (decimal_places(raw_taker_amt) > round_config.amount)
+                    {
+                        raw_taker_amt = round_down(raw_taker_amt, round_config.amount);
+                    }
+                }
+            }
+
+            OrderData order_data;
+            order_data.maker = funder_address_.empty() ? order_signer_->address() : funder_address_;
+            order_data.taker = state->params.taker.empty()
+                                   ? "0x0000000000000000000000000000000000000000"
+                                   : state->params.taker;
+            order_data.token_id = state->params.token_id;
+            order_data.maker_amount = to_wei(raw_maker_amt, 6);
+            order_data.taker_amount = to_wei(raw_taker_amt, 6);
+            order_data.side = state->params.side;
+            order_data.fee_rate_bps = fee_rate_bps;
+            order_data.nonce = state->params.nonce.empty() ? "0" : state->params.nonce;
+            order_data.signer = order_signer_->address();
+            order_data.expiration = state->params.expiration.empty() ? "0" : state->params.expiration;
+            order_data.signature_type = sig_type_;
+
+            SignedOrder signed_order = order_signer_->sign_order(order_data, exchange_addr);
+
+            nlohmann::ordered_json body;
+            nlohmann::ordered_json order_json;
+            order_json["salt"] = std::stoll(signed_order.salt);
+            order_json["maker"] = signed_order.maker;
+            order_json["signer"] = signed_order.signer;
+            order_json["taker"] = signed_order.taker;
+            order_json["tokenId"] = signed_order.token_id;
+            order_json["makerAmount"] = signed_order.maker_amount;
+            order_json["takerAmount"] = signed_order.taker_amount;
+            order_json["side"] = signed_order.side == 0 ? "BUY" : "SELL";
+            order_json["expiration"] = signed_order.expiration;
+            order_json["nonce"] = signed_order.nonce;
+            order_json["feeRateBps"] = signed_order.fee_rate_bps;
+            order_json["signatureType"] = signed_order.signature_type;
+            order_json["signature"] = signed_order.signature;
+
+            body["order"] = order_json;
+            body["owner"] = api_creds_->api_key;
+            body["orderType"] = order_type_to_string(state->params.order_type);
+            body["deferExec"] = false;
+
+            std::string body_str = body.dump();
+            std::map<std::string, std::string> headers;
+            try
+            {
+                headers = get_l2_headers("POST", "/order", body_str);
+            }
+            catch (const std::exception &e)
+            {
+                finish_with_error(e.what());
+                return;
+            }
+
+            http_.post_async("/order", body_str, headers,
+                             [state](const HttpResponse &http_response) mutable
+                             {
+                                 OrderResponse order_response = parse_order_response(http_response.body);
+                                 if (!http_response.ok())
+                                 {
+                                     order_response.success = false;
+                                     if (order_response.error_msg.empty())
+                                     {
+                                         if (!http_response.error.empty())
+                                         {
+                                             order_response.error_msg = http_response.error;
+                                         }
+                                         else
+                                         {
+                                             order_response.error_msg =
+                                                 "http error: " + std::to_string(http_response.status_code);
+                                         }
+                                     }
+                                 }
+                                 if (state->callback && !state->done)
+                                 {
+                                     state->done = true;
+                                     state->callback(order_response);
+                                 }
+                             });
+        };
+
+        std::string tick_path = "/tick-size?token_id=" + state->params.token_id;
+        http_.get_async(tick_path,
+                        [state, finish_with_error, resolve_price](const HttpResponse &http_response) mutable
+                        {
+                            if (!http_response.ok())
+                            {
+                                finish_with_error("failed to fetch tick size");
+                                return;
+                            }
+
+                            std::string min_tick_size = "0.01";
+                            try
+                            {
+                                auto j = json::parse(http_response.body);
+                                min_tick_size = j.value("minimum_tick_size", "0.01");
+                            }
+                            catch (...)
+                            {
+                                finish_with_error("failed to parse tick size");
+                                return;
+                            }
+
+                            std::string tick_size = min_tick_size;
+                            if (state->params.tick_size.has_value() && !state->params.tick_size->empty())
+                            {
+                                if (is_tick_size_smaller(*state->params.tick_size, min_tick_size))
+                                {
+                                    finish_with_error("invalid tick size (" + *state->params.tick_size +
+                                                      "), minimum for the market is " + min_tick_size);
+                                    return;
+                                }
+                                tick_size = *state->params.tick_size;
+                            }
+                            state->tick_size = tick_size;
+                            (*resolve_price)();
+                        });
+    }
+
     bool ClobClient::cancel_order(const std::string &order_id)
     {
         json body;
@@ -1361,6 +1713,64 @@ namespace polymarket
         {
             return std::nullopt;
         }
+    }
+
+    void ClobClient::get_balance_allowance_async(
+        const std::string &asset_type,
+        std::function<void(std::optional<BalanceAllowance>)> callback)
+    {
+        std::string base_path = "/balance-allowance";
+        std::string sig_type = std::to_string(static_cast<int>(sig_type_));
+        std::string path_with_params = base_path + "?asset_type=COLLATERAL&signature_type=" + sig_type;
+        std::map<std::string, std::string> headers;
+        try
+        {
+            headers = get_l2_headers("GET", base_path, "");
+        }
+        catch (...)
+        {
+            if (callback)
+            {
+                callback(std::nullopt);
+            }
+            return;
+        }
+
+        http_.get_async(path_with_params, headers,
+                        [callback = std::move(callback)](const HttpResponse &http_response) mutable
+                        {
+                            std::optional<BalanceAllowance> result = std::nullopt;
+                            if (http_response.ok())
+                            {
+                                try
+                                {
+                                    auto j = json::parse(http_response.body);
+                                    BalanceAllowance ba;
+                                    ba.balance = j.value("balance", "0");
+                                    ba.allowance = j.value("allowance", "0");
+                                    result = ba;
+                                }
+                                catch (...)
+                                {
+                                    result = std::nullopt;
+                                }
+                            }
+
+                            if (callback)
+                            {
+                                callback(result);
+                            }
+                        });
+    }
+
+    void ClobClient::poll_async(long timeout_ms)
+    {
+        http_.poll_async(timeout_ms);
+    }
+
+    size_t ClobClient::pending_async() const
+    {
+        return http_.pending_async();
     }
 
     bool ClobClient::update_balance_allowance(const std::string &asset_type)
