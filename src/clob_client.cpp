@@ -1551,6 +1551,10 @@ namespace polymarket
                                                  "http error: " + std::to_string(http_response.status_code);
                                          }
                                      }
+                                     if (order_response.status.empty())
+                                     {
+                                         order_response.status = std::to_string(http_response.status_code);
+                                     }
                                  }
                                  if (state->callback && !state->done)
                                  {
@@ -1574,7 +1578,20 @@ namespace polymarket
                             try
                             {
                                 auto j = json::parse(http_response.body);
-                                min_tick_size = j.value("minimum_tick_size", "0.01");
+                                if (j.contains("minimum_tick_size"))
+                                {
+                                    if (j["minimum_tick_size"].is_string())
+                                    {
+                                        min_tick_size = j["minimum_tick_size"].get<std::string>();
+                                    }
+                                    else if (j["minimum_tick_size"].is_number())
+                                    {
+                                        std::ostringstream oss;
+                                        oss.setf(std::ios::fixed);
+                                        oss << std::setprecision(6) << j["minimum_tick_size"].get<double>();
+                                        min_tick_size = normalize_tick_size(oss.str());
+                                    }
+                                }
                             }
                             catch (...)
                             {
