@@ -29,6 +29,7 @@ namespace polymarket
         std::string error_msg;
         std::string order_id;
         std::string client_order_id;
+        double elapsed_ms = 0.0;
         std::vector<std::string> transaction_hashes;
         std::string status;
         std::string taking_amount; // Shares received
@@ -72,6 +73,9 @@ namespace polymarket
     {
         std::string balance;
         std::string allowance;
+        double elapsed_ms = 0.0;
+        long status_code = 0;
+        std::string error_message;
     };
 
     // Price info
@@ -279,10 +283,10 @@ namespace polymarket
         size_t pending_async() const;
 
         // Balance and allowance
-        std::optional<BalanceAllowance> get_balance_allowance(const std::string &asset_type = "USDC");
+        BalanceAllowance get_balance_allowance(const std::string &asset_type = "USDC");
         void get_balance_allowance_async(
             const std::string &asset_type,
-            std::function<void(std::optional<BalanceAllowance>)> callback);
+            std::function<void(const BalanceAllowance &)> callback);
         bool update_balance_allowance(const std::string &asset_type = "USDC");
 
         // Order scoring

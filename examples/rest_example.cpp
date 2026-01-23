@@ -126,10 +126,14 @@ int main()
 
         // Get balance
         auto balance = client.get_balance_allowance("USDC");
-        if (balance)
+        if (!balance.error_message.empty())
         {
-            std::cout << "USDC Balance: " << balance->balance << "\n";
-            std::cout << "USDC Allowance: " << balance->allowance << "\n";
+            std::cout << "Balance error: " << balance.error_message << "\n";
+        }
+        else
+        {
+            std::cout << "USDC Balance: " << balance.balance << "\n";
+            std::cout << "USDC Allowance: " << balance.allowance << "\n";
         }
 
         // Get open orders

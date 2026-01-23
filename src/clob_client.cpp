@@ -1182,7 +1182,9 @@ namespace polymarket
         auto headers = get_l2_headers("POST", "/order", body_str);
         auto response = http_.post("/order", body_str, headers);
 
-        return parse_order_response(response.body);
+        auto result = parse_order_response(response.body);
+        result.elapsed_ms = response.elapsed_ms;
+        return result;
     }
 
     std::vector<OrderResponse> ClobClient::post_orders(const std::vector<BatchOrderEntry> &orders, bool post_only)
@@ -1247,14 +1249,18 @@ namespace polymarket
             {
                 for (const auto &item : j)
                 {
-                    results.push_back(parse_order_response(item.dump()));
+                    auto parsed = parse_order_response(item.dump());
+                    parsed.elapsed_ms = response.elapsed_ms;
+                    results.push_back(parsed);
                 }
             }
         }
         catch (...)
         {
             // Single error response
-            results.push_back(parse_order_response(response.body));
+            auto parsed = parse_order_response(response.body);
+            parsed.elapsed_ms = response.elapsed_ms;
+            results.push_back(parsed);
         }
 
         return results;
@@ -1596,6 +1602,7 @@ namespace polymarket
                                          order_response.status = std::to_string(http_response.status_code);
                                      }
                                  }
+                                 order_response.elapsed_ms = http_response.elapsed_ms;
                                  if (state->callback && !state->done)
                                  {
                                      state->done = true;
@@ -1783,34 +1790,42 @@ namespace polymarket
         return parse_trades(response.body);
     }
 
-    std::optional<BalanceAllowance> ClobClient::get_balance_allowance(const std::string &asset_type)
+    BalanceAllowance ClobClient::get_balance_allowance(const std::string &asset_type)
     {
+        BalanceAllowance ba;
         std::string base_path = "/balance-allowance";
         std::string sig_type = std::to_string(static_cast<int>(sig_type_));
         std::string path_with_params = base_path + "?asset_type=COLLATERAL&signature_type=" + sig_type;
         auto headers = get_l2_headers("GET", base_path, "");
         auto response = http_.get(path_with_params, headers);
 
+        ba.elapsed_ms = response.elapsed_ms;
+        ba.status_code = response.status_code;
         if (!response.ok())
-            return std::nullopt;
+        {
+            ba.error_message = response.error.empty()
+                                   ? "http error: " + std::to_string(response.status_code)
+                                   : response.error;
+            return ba;
+        }
 
         try
         {
             auto j = json::parse(response.body);
-            BalanceAllowance ba;
             ba.balance = j.value("balance", "0");
             ba.allowance = j.value("allowance", "0");
             return ba;
         }
         catch (...)
         {
-            return std::nullopt;
+            ba.error_message = "failed to parse balance allowance";
+            return ba;
         }
     }
 
     void ClobClient::get_balance_allowance_async(
         const std::string &asset_type,
-        std::function<void(std::optional<BalanceAllowance>)> callback)
+        std::function<void(const BalanceAllowance &)> callback)
     {
         std::string base_path = "/balance-allowance";
         std::string sig_type = std::to_string(static_cast<int>(sig_type_));
@@ -1824,7 +1839,9 @@ namespace polymarket
         {
             if (callback)
             {
-                callback(std::nullopt);
+                BalanceAllowance ba;
+                ba.error_message = "Client not authenticated";
+                callback(ba);
             }
             return;
         }
@@ -1832,26 +1849,32 @@ namespace polymarket
         http_.get_async(path_with_params, headers,
                         [callback = std::move(callback)](const HttpResponse &http_response) mutable
                         {
-                            std::optional<BalanceAllowance> result = std::nullopt;
+                            BalanceAllowance ba;
+                            ba.elapsed_ms = http_response.elapsed_ms;
+                            ba.status_code = http_response.status_code;
                             if (http_response.ok())
                             {
                                 try
                                 {
                                     auto j = json::parse(http_response.body);
-                                    BalanceAllowance ba;
                                     ba.balance = j.value("balance", "0");
                                     ba.allowance = j.value("allowance", "0");
-                                    result = ba;
                                 }
                                 catch (...)
                                 {
-                                    result = std::nullopt;
+                                    ba.error_message = "failed to parse balance allowance";
                                 }
+                            }
+                            else
+                            {
+                                ba.error_message = http_response.error.empty()
+                                                       ? "http error: " + std::to_string(http_response.status_code)
+                                                       : http_response.error;
                             }
 
                             if (callback)
                             {
-                                callback(result);
+                                callback(ba);
                             }
                         });
     }
