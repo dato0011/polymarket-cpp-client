@@ -2366,6 +2366,14 @@ namespace polymarket
 
             result.success = j.value("success", false);
             result.error_msg = j.value("errorMsg", "");
+            if (result.error_msg.empty())
+            {
+                result.error_msg = j.value("error", "");
+            }
+            if (result.error_msg.empty())
+            {
+                result.error_msg = j.value("message", "");
+            }
             result.order_id = j.value("orderID", "");
             result.status = j.value("status", "");
             result.taking_amount = j.value("takingAmount", "0");
