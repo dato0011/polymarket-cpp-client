@@ -1099,6 +1099,8 @@ namespace polymarket
             throw std::runtime_error("invalid order side");
         }
 
+        raw_taker_amt = round_down(raw_taker_amt, 2);
+
         OrderData order_data;
         order_data.maker = funder_address_.empty() ? order_signer_->address() : funder_address_;
         order_data.taker = params.taker.empty() ? "0x0000000000000000000000000000000000000000" : params.taker;
