@@ -2342,6 +2342,28 @@ namespace polymarket
 
             Orderbook book;
             book.timestamp_ns = now_ns();
+            if (j.contains("timestamp"))
+            {
+                if (j["timestamp"].is_number_unsigned())
+                {
+                    book.server_timestamp = j["timestamp"].get<uint64_t>();
+                }
+                else if (j["timestamp"].is_number())
+                {
+                    book.server_timestamp = static_cast<uint64_t>(j["timestamp"].get<double>());
+                }
+                else if (j["timestamp"].is_string())
+                {
+                    try
+                    {
+                        book.server_timestamp = std::stoull(j["timestamp"].get<std::string>());
+                    }
+                    catch (...)
+                    {
+                        book.server_timestamp = 0;
+                    }
+                }
+            }
 
             if (j.contains("asset_id"))
             {

@@ -23,6 +23,7 @@ namespace polymarket
         std::vector<PriceLevel> bids;
         std::vector<PriceLevel> asks;
         uint64_t timestamp_ns;
+        uint64_t server_timestamp{0};
 
         // Best bid = highest bid price
         double best_bid() const

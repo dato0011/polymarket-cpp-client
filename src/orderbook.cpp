@@ -220,6 +220,17 @@ namespace polymarket
                     Orderbook book;
                     book.asset_id = asset_id;
                     book.timestamp_ns = now_ns();
+                    if (j.contains("timestamp"))
+                    {
+                        if (j["timestamp"].is_number_unsigned())
+                        {
+                            book.server_timestamp = j["timestamp"].get<uint64_t>();
+                        }
+                        else if (j["timestamp"].is_number())
+                        {
+                            book.server_timestamp = static_cast<uint64_t>(j["timestamp"].get<double>());
+                        }
+                    }
 
                     // Parse asks
                     if (payload.contains("asks") && payload["asks"].is_array())
@@ -270,6 +281,17 @@ namespace polymarket
                 Orderbook book;
                 book.asset_id = asset_id;
                 book.timestamp_ns = now_ns();
+                if (j.contains("timestamp"))
+                {
+                    if (j["timestamp"].is_number_unsigned())
+                    {
+                        book.server_timestamp = j["timestamp"].get<uint64_t>();
+                    }
+                    else if (j["timestamp"].is_number())
+                    {
+                        book.server_timestamp = static_cast<uint64_t>(j["timestamp"].get<double>());
+                    }
+                }
 
                 // Parse bids
                 if (j.contains("bids") && j["bids"].is_array())
