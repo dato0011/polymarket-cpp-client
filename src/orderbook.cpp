@@ -11,8 +11,8 @@ namespace polymarket
     OrderbookManager::OrderbookManager(const Config &config)
         : config_(config)
     {
-        // Use real-time data WebSocket endpoint (same as @polymarket/real-time-data-client)
-        ws_.set_url(config_.rtds_ws_url);
+        // Use CLOB WebSocket endpoint for orderbook updates
+        ws_.set_url(config_.clob_ws_url);
         ws_.set_ping_interval_ms(config_.ws_ping_interval_ms);
         ws_.set_auto_reconnect(true);
 
