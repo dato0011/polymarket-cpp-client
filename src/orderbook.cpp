@@ -167,18 +167,12 @@ namespace polymarket
             return;
         }
 
-        // Build subscription message for Polymarket Real-Time Data WebSocket
-        // Format matches @polymarket/real-time-data-client:
-        // {"action": "subscribe", "subscriptions": [{"topic": "clob_market", "type": "agg_orderbook", "filters": "[token1,token2]"}]}
+        // Build subscription message for Polymarket CLOB WebSocket
+        // Format matches examples/ws_example.cpp:
+        // {"type": "market", "assets_ids": ["token1", "token2"]}
         json subscribe_msg;
-        subscribe_msg["action"] = "subscribe";
-
-        json subscription;
-        subscription["topic"] = "clob_market";
-        subscription["type"] = "agg_orderbook";
-        subscription["filters"] = json(subscribed_tokens_).dump(); // JSON array as string
-
-        subscribe_msg["subscriptions"] = json::array({subscription});
+        subscribe_msg["type"] = "market";
+        subscribe_msg["assets_ids"] = json::array(subscribed_tokens_);
 
         std::string msg = subscribe_msg.dump();
         std::cout << "[WS] Sending subscribe: " << subscribed_tokens_.size() << " tokens" << std::endl;
