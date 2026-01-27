@@ -24,13 +24,7 @@ namespace polymarket
     void WebSocketClient::set_ping_interval_ms(int interval_ms)
     {
         ping_interval_ms_ = interval_ms;
-        if (interval_ms <= 0)
-        {
-            ws_.setPingInterval(0);
-            return;
-        }
-        int interval_secs = (interval_ms + 999) / 1000;
-        ws_.setPingInterval(interval_secs);
+        ws_.setPingInterval(interval_ms);
     }
 
     void WebSocketClient::set_auto_reconnect(bool enabled)
