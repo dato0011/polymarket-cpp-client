@@ -183,7 +183,7 @@ namespace polymarket
     void OrderbookManager::handle_message(const std::string &message)
     {
         // Skip empty messages
-        if (message.empty() || message == "{}")
+        if (message.empty() || message == "{}" || message == "PONG")
         {
             return;
         }
