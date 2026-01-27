@@ -172,7 +172,7 @@ namespace polymarket
         // {"type": "market", "assets_ids": ["token1", "token2"]}
         json subscribe_msg;
         subscribe_msg["type"] = "market";
-        subscribe_msg["assets_ids"] = json::array(subscribed_tokens_);
+        subscribe_msg["assets_ids"] = subscribed_tokens_;
 
         std::string msg = subscribe_msg.dump();
         std::cout << "[WS] Sending subscribe: " << subscribed_tokens_.size() << " tokens" << std::endl;
