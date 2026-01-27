@@ -8,7 +8,6 @@ namespace polymarket
     WebSocketClient::WebSocketClient()
         : ping_interval_ms_(5000), auto_reconnect_(true), state_(WsState::DISCONNECTED), running_(false), should_stop_(false)
     {
-        ws_.setPingMessage("PING", ix::SendMessageKind::Text);
     }
 
     WebSocketClient::~WebSocketClient()
