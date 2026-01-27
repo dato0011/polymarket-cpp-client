@@ -224,6 +224,17 @@ namespace polymarket
                         {
                             book.server_timestamp = static_cast<uint64_t>(j["timestamp"].get<double>());
                         }
+                        else if (j["timestamp"].is_string())
+                        {
+                            try
+                            {
+                                book.server_timestamp = std::stoull(j["timestamp"].get<std::string>());
+                            }
+                            catch (...)
+                            {
+                                book.server_timestamp = 0;
+                            }
+                        }
                     }
 
                     // Parse asks
@@ -284,6 +295,17 @@ namespace polymarket
                     else if (j["timestamp"].is_number())
                     {
                         book.server_timestamp = static_cast<uint64_t>(j["timestamp"].get<double>());
+                    }
+                    else if (j["timestamp"].is_string())
+                    {
+                        try
+                        {
+                            book.server_timestamp = std::stoull(j["timestamp"].get<std::string>());
+                        }
+                        catch (...)
+                        {
+                            book.server_timestamp = 0;
+                        }
                     }
                 }
 
